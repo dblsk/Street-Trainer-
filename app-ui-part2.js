@@ -486,9 +486,10 @@
    * street lookup, silenced — a single summary toast covers the whole
    * batch), and render once at the end.
    */
-  async function runFairfaxImport(buttonEl) {
-    const stationInput = document.getElementById('ffx-station-number');
-    const boxesInput = document.getElementById('ffx-box-numbers');
+  async function runFairfaxImport(buttonEl, root) {
+    const scope = root || document;
+    const stationInput = scope.querySelector('#ffx-station-number');
+    const boxesInput = scope.querySelector('#ffx-box-numbers');
 
     const stationText = stationInput ? stationInput.value.trim() : '';
     const boxesText = boxesInput ? boxesInput.value.trim() : '';
@@ -707,8 +708,8 @@
           el.addEventListener('click', function () {
             const verts = window.FirstDue.Map.finishDrawing();
             if (!verts) return;
-            const numberInput = document.getElementById('new-box-number');
-            const labelInput = document.getElementById('new-box-label');
+            const numberInput = root.querySelector('#new-box-number');
+            const labelInput = root.querySelector('#new-box-label');
             const boxNumber = (numberInput && numberInput.value.trim()) || '';
             const label = (labelInput && labelInput.value.trim()) || '';
 
@@ -731,7 +732,7 @@
 
         case 'import-fairfax-boxes':
           el.addEventListener('click', function () {
-            runFairfaxImport(el);
+            runFairfaxImport(el, root);
           });
           break;
 
@@ -776,8 +777,8 @@
 
         case 'finish-draw-street':
           el.addEventListener('click', function () {
-            const nameInput = document.getElementById('new-street-name');
-            const boxSelect = document.getElementById('new-street-box');
+            const nameInput = root.querySelector('#new-street-name');
+            const boxSelect = root.querySelector('#new-street-box');
             const name = (nameInput && nameInput.value.trim()) || '';
             const boxNumber = (boxSelect && boxSelect.value) || null;
 
