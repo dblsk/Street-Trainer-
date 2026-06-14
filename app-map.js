@@ -26,8 +26,22 @@
   const streetLayerById = {};
   const labelMarkerById = {};
 
-  const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-  const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+  const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>';
+  const TILE_SUBDOMAINS = ['a', 'b', 'c', 'd'];
+
+  // Overpass API: free OpenStreetMap road-data query service, used to
+  // auto-populate a box's street list from its drawn polygon.
+  const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
+  const OVERPASS_TIMEOUT_MS = 25000;
+
+  // highway tag values we treat as "streets" for quiz purposes — excludes
+  // footways, cycleways, service alleys, etc. which would clutter the roster.
+  const OSM_HIGHWAY_STREET_TYPES = [
+    'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+    'unclassified', 'residential', 'living_street',
+    'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link',
+  ];
 
   /**
    * Guard used at the top of every map-dependent public function.
@@ -118,8 +132,9 @@
 
     tileLayer = L.tileLayer(TILE_URL, {
       attribution: TILE_ATTRIBUTION,
-      maxZoom: 19,
-      className: 'map-tiles-dark',
+      maxZoom: 20,
+      subdomains: TILE_SUBDOMAINS,
+      detectRetina: true, // serves @2x tiles on high-DPI (retina) screens via the {r} placeholder
       crossOrigin: true,
     });
 
@@ -628,6 +643,199 @@
   }
 
   // ---------------------------------------------------------------------
+  // OVERPASS AUTO-POPULATE (street auto-discovery from a drawn box)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Build an Overpass QL query that returns every named highway way whose
+   * geometry intersects the given polygon. `verts` is an array of [lat,lng]
+   * pairs (the same format Store.state.drawingVertices uses).
+   *
+   * Overpass's `poly:` filter expects a space-separated "lat lon lat lon..."
+   * string and does NOT need the ring closed (it closes it implicitly), but
+   * closing it is harmless and matches GeoJSON convention.
+   */
+  function buildOverpassQuery(verts) {
+    const polyStr = verts.map(function (v) {
+      return round6(v[0]) + ' ' + round6(v[1]);
+    }).join(' ');
+
+    const highwayFilter = '["highway"~"^(' + OSM_HIGHWAY_STREET_TYPES.join('|') + ')$"]';
+
+    return '[out:json][timeout:25];' +
+      'way' + highwayFilter + '["name"](poly:"' + polyStr + '");' +
+      'out geom;';
+  }
+
+  function round6(n) {
+    return Math.round(n * 1e6) / 1e6;
+  }
+
+  /**
+   * Query Overpass for named streets within the polygon defined by `verts`
+   * (array of [lat,lng]) and return an array of GeoJSON LineString Feature
+   * objects (street features, NOT yet persisted) tagged with `boxNumber`.
+   *
+   * Adjacent OSM way-segments sharing the same name are merged into a single
+   * LineString per contiguous chain, so one named street produces one quiz
+   * target per geometrically-distinct branch rather than dozens of tiny
+   * fragments.
+   *
+   * Returns a Promise resolving to { features, rawWayCount, error }.
+   * On network/parse failure, `error` is a human-readable string and
+   * `features` is an empty array — callers should save the box regardless
+   * and let the user add streets manually (per app convention).
+   */
+  async function fetchStreetsForPolygon(verts, boxNumber) {
+    if (!verts || verts.length < 3) {
+      return { features: [], rawWayCount: 0, error: 'Polygon has too few points.' };
+    }
+
+    const query = buildOverpassQuery(verts);
+    const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(function () { controller.abort(); }, OVERPASS_TIMEOUT_MS) : null;
+
+    let response;
+    try {
+      response = await fetch(OVERPASS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: query,
+        signal: controller ? controller.signal : undefined,
+      });
+    } catch (err) {
+      if (timeoutId) clearTimeout(timeoutId);
+      const msg = (err && err.name === 'AbortError')
+        ? 'Street lookup timed out. You can add streets manually below.'
+        : 'Street lookup failed (network error). You can add streets manually below.';
+      console.error('[FirstDue] Overpass fetch failed:', err);
+      return { features: [], rawWayCount: 0, error: msg };
+    }
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.error('[FirstDue] Overpass returned HTTP ' + response.status);
+      return { features: [], rawWayCount: 0, error: 'Street lookup failed (server returned ' + response.status + '). You can add streets manually below.' };
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch (err) {
+      console.error('[FirstDue] Overpass response was not valid JSON:', err);
+      return { features: [], rawWayCount: 0, error: 'Street lookup returned an unreadable response. You can add streets manually below.' };
+    }
+
+    const elements = (data && Array.isArray(data.elements)) ? data.elements : [];
+    const ways = elements.filter(function (el) {
+      return el.type === 'way' &&
+        el.geometry && Array.isArray(el.geometry) && el.geometry.length >= 2 &&
+        el.tags && typeof el.tags.name === 'string' && el.tags.name.trim().length > 0 &&
+        OSM_HIGHWAY_STREET_TYPES.indexOf(el.tags.highway) !== -1;
+    });
+
+    const merged = mergeAdjacentNamedWays(ways);
+
+    const features = merged.map(function (way) {
+      const coords = way.geometry.map(function (pt) { return [pt.lon, pt.lat]; }); // GeoJSON: [lng, lat]
+      return {
+        type: 'Feature',
+        id: FD.genId('street'),
+        properties: {
+          layerType: 'street',
+          name: way.tags.name.trim(),
+          boxNumber: boxNumber,
+          source: 'osm',
+          osmIds: way.osmIds,
+        },
+        geometry: { type: 'LineString', coordinates: coords },
+      };
+    });
+
+    return { features: features, rawWayCount: ways.length, error: null };
+  }
+
+  /**
+   * Merge consecutive OSM ways that share the same `name` AND whose
+   * endpoints connect (the last point of one ≈ the first point of the
+   * next, within a small tolerance), into a single longer way. This
+   * collapses the common OSM pattern of one street being split into many
+   * short segments at every intersection, without merging geometrically
+   * separate branches that happen to share a name (e.g. a street that
+   * splits around a median, or two disconnected stretches).
+   *
+   * Input/output elements have the shape: { tags: {name}, geometry: [{lat,lon},...], osmIds: [id,...] }
+   */
+  function mergeAdjacentNamedWays(ways) {
+    const ENDPOINT_TOLERANCE = 1e-5; // ~1m at the equator — OSM shared nodes are exact, but allow tiny float drift
+
+    // Normalize input into a working list with osmIds arrays
+    let chains = ways.map(function (w) {
+      return {
+        tags: { name: w.tags.name },
+        geometry: w.geometry.slice(),
+        osmIds: [w.id],
+      };
+    });
+
+    function pointsClose(a, b) {
+      return Math.abs(a.lat - b.lat) < ENDPOINT_TOLERANCE && Math.abs(a.lon - b.lon) < ENDPOINT_TOLERANCE;
+    }
+
+    let mergedAny = true;
+    let iterations = 0;
+    // Repeat merge passes until stable (a chain might connect to multiple
+    // others in sequence). Cap iterations defensively to avoid pathological
+    // infinite loops on malformed data.
+    while (mergedAny && iterations < 50) {
+      mergedAny = false;
+      iterations++;
+
+      for (let i = 0; i < chains.length; i++) {
+        if (!chains[i]) continue;
+        for (let j = i + 1; j < chains.length; j++) {
+          if (!chains[j]) continue;
+          const a = chains[i];
+          const b = chains[j];
+          if (a.tags.name !== b.tags.name) continue;
+
+          const aStart = a.geometry[0];
+          const aEnd = a.geometry[a.geometry.length - 1];
+          const bStart = b.geometry[0];
+          const bEnd = b.geometry[b.geometry.length - 1];
+
+          let combinedGeometry = null;
+
+          if (pointsClose(aEnd, bStart)) {
+            combinedGeometry = a.geometry.concat(b.geometry.slice(1));
+          } else if (pointsClose(aEnd, bEnd)) {
+            combinedGeometry = a.geometry.concat(b.geometry.slice(0, -1).reverse());
+          } else if (pointsClose(aStart, bEnd)) {
+            combinedGeometry = b.geometry.concat(a.geometry.slice(1));
+          } else if (pointsClose(aStart, bStart)) {
+            combinedGeometry = b.geometry.slice().reverse().concat(a.geometry.slice(1));
+          }
+
+          if (combinedGeometry) {
+            chains[i] = {
+              tags: a.tags,
+              geometry: combinedGeometry,
+              osmIds: a.osmIds.concat(b.osmIds),
+            };
+            chains[j] = null;
+            mergedAny = true;
+            break; // restart inner loop scan for chain i against remaining chains
+          }
+        }
+      }
+
+      chains = chains.filter(function (c) { return c !== null; });
+    }
+
+    return chains;
+  }
+
+  // ---------------------------------------------------------------------
   // MAP CLICK ROUTER
   // ---------------------------------------------------------------------
 
@@ -789,6 +997,9 @@
     getStreetDrawVertexCount: getStreetDrawVertexCount,
     isStreetDrawingActive: isStreetDrawingActive,
 
+    // street auto-discovery (Overpass)
+    fetchStreetsForPolygon: fetchStreetsForPolygon,
+
     // quiz helpers
     highlightStreetForQuiz: highlightStreetForQuiz,
     clearQuizHighlights: clearQuizHighlights,
@@ -803,6 +1014,8 @@
       labelMarkerById: labelMarkerById,
       masteryForBox: masteryForBox,
       colorForMasteryLevel: colorForMasteryLevel,
+      buildOverpassQuery: buildOverpassQuery,
+      mergeAdjacentNamedWays: mergeAdjacentNamedWays,
     },
   };
 

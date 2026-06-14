@@ -637,14 +637,29 @@
   // ---------------------------------------------------------------------
   const Toast = (function () {
     let container = null;
+    let nextId = 1;
+    const DEFAULT_DURATION_MS = 3200;
 
     function ensureContainer() {
       if (!container) container = document.getElementById('toast-stack');
       return container;
     }
 
-    function show(message, type) {
+    /**
+     * Show a toast notification.
+     * @param {string} message
+     * @param {'info'|'success'|'error'|'warn'} type
+     * @param {{sticky?: boolean, duration?: number}} [options]
+     *   sticky: if true, the toast stays until dismiss(id) is called (used
+     *     for "in progress…" states like network lookups).
+     *   duration: override the auto-dismiss time in ms (ignored if sticky).
+     * @returns {number} an id that can be passed to dismiss()
+     */
+    function show(message, type, options) {
       type = type || 'info';
+      options = options || {};
+      const id = nextId++;
+
       const el = document.createElement('div');
       const colorMap = {
         info: 'border-base-600 text-ink-100',
@@ -658,22 +673,46 @@
         error: 'alert-triangle',
         warn: 'alert-triangle',
       };
+      el.dataset.toastId = String(id);
       el.className = 'toast-item pointer-events-auto w-full md:w-auto max-w-sm bg-base-900 border ' + (colorMap[type] || colorMap.info) +
         ' rounded-md px-3 py-2 text-xs font-mono shadow-lg flex items-center gap-2';
-      el.innerHTML = '<i data-lucide="' + (iconMap[type] || iconMap.info) + '" class="w-3.5 h-3.5 shrink-0"></i><span class="flex-1">' + escapeHtml(message) + '</span>';
+      el.innerHTML = '<i data-lucide="' + (iconMap[type] || iconMap.info) + '" class="w-3.5 h-3.5 shrink-0' + (options.sticky ? ' animate-spin' : '') + '"></i><span class="flex-1">' + escapeHtml(message) + '</span>';
+
+      // Use a spinner icon for sticky/in-progress toasts if available
+      if (options.sticky) {
+        const icon = el.querySelector('i');
+        if (icon) icon.setAttribute('data-lucide', 'loader-2');
+      }
+
       const c = ensureContainer();
       c.appendChild(el);
       if (window.lucide) window.lucide.createIcons({ nodes: [el] });
 
-      setTimeout(function () {
-        el.style.transition = 'opacity 0.25s, transform 0.25s';
-        el.style.opacity = '0';
-        el.style.transform = 'translateY(6px)';
-        setTimeout(function () { el.remove(); }, 260);
-      }, 3200);
+      if (!options.sticky) {
+        const duration = typeof options.duration === 'number' ? options.duration : DEFAULT_DURATION_MS;
+        setTimeout(function () { removeToastEl(el); }, duration);
+      }
+
+      return id;
     }
 
-    return { show: show };
+    function removeToastEl(el) {
+      if (!el || !el.parentNode) return;
+      el.style.transition = 'opacity 0.25s, transform 0.25s';
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(6px)';
+      setTimeout(function () { el.remove(); }, 260);
+    }
+
+    /** Dismiss a toast by the id returned from show(). No-op if already gone. */
+    function dismiss(id) {
+      const c = ensureContainer();
+      if (!c) return;
+      const el = c.querySelector('[data-toast-id="' + id + '"]');
+      if (el) removeToastEl(el);
+    }
+
+    return { show: show, dismiss: dismiss };
   })();
 
   /** Minimal HTML escaping for any user-provided strings rendered as innerHTML. */

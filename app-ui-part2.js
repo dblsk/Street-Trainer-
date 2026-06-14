@@ -343,6 +343,90 @@
   }
 
   // ---------------------------------------------------------------------
+  // SHARED: SAVE A NEW BOX + AUTO-LOOKUP ITS STREETS VIA OVERPASS
+  // ---------------------------------------------------------------------
+
+  const STREET_DUPLICATE_TOLERANCE_DEG = 0.0003; // ~30m — midpoints within this distance + same normalized name are treated as the same street
+
+  /**
+   * Persist a newly-drawn box, then asynchronously query Overpass for named
+   * streets inside it and add any that aren't already present. Always saves
+   * the box immediately (independent of the street lookup outcome) so a
+   * slow/failed network call never blocks box creation — per spec, the user
+   * can add missing streets manually afterward.
+   *
+   * @param {Array<[number,number]>} verts - drawing vertices, [lat,lng] pairs
+   * @param {string} boxNumber
+   * @param {string} label
+   */
+  async function saveNewBoxWithStreetLookup(verts, boxNumber, label) {
+    const feature = window.FirstDue.Map.buildPolygonFeatureFromVertices(verts, { boxNumber: boxNumber, label: label });
+    Store.addBox(feature);
+    window.FirstDue.Map.cancelDrawing();
+    hideDrawBanner();
+    syncTopBarDrawButtons();
+    renderActiveTab();
+
+    const loadingToastId = Toast.show('Box ' + boxNumber + ' saved. Looking up streets…', 'info', { sticky: true });
+
+    let result;
+    try {
+      result = await window.FirstDue.Map.fetchStreetsForPolygon(verts, boxNumber);
+    } catch (err) {
+      console.error('[FirstDue] Unexpected error during street lookup:', err);
+      result = { features: [], rawWayCount: 0, error: 'Street lookup failed unexpectedly. You can add streets manually below.' };
+    }
+
+    if (loadingToastId) Toast.dismiss(loadingToastId);
+
+    const existingNames = Store.state.streets.features
+      .filter(function (f) { return f.properties && String(f.properties.boxNumber) === String(boxNumber); })
+      .map(function (f) {
+        return {
+          normName: FD.normalizeStreetName(f.properties.name || ''),
+          midpoint: FD.lineMidpoint(f.geometry.coordinates),
+        };
+      });
+
+    let addedCount = 0;
+    let skippedDupeCount = 0;
+
+    result.features.forEach(function (sf) {
+      const normName = FD.normalizeStreetName(sf.properties.name || '');
+      const midpoint = FD.lineMidpoint(sf.geometry.coordinates);
+
+      const isDuplicate = existingNames.some(function (ex) {
+        if (ex.normName !== normName) return false;
+        const dLng = Math.abs(ex.midpoint[0] - midpoint[0]);
+        const dLat = Math.abs(ex.midpoint[1] - midpoint[1]);
+        return dLng < STREET_DUPLICATE_TOLERANCE_DEG && dLat < STREET_DUPLICATE_TOLERANCE_DEG;
+      });
+
+      if (isDuplicate) {
+        skippedDupeCount++;
+        return;
+      }
+
+      Store.addStreet(sf);
+      existingNames.push({ normName: normName, midpoint: midpoint });
+      addedCount++;
+    });
+
+    renderActiveTab();
+
+    if (result.error) {
+      Toast.show('Box ' + boxNumber + ': ' + result.error, 'warn', { duration: 7000 });
+    } else if (addedCount === 0) {
+      Toast.show('Box ' + boxNumber + ': no named streets found in OpenStreetMap for this area. Add streets manually below.', 'warn', { duration: 7000 });
+    } else {
+      let msg = 'Box ' + boxNumber + ': added ' + addedCount + ' street' + (addedCount === 1 ? '' : 's') + ' from OpenStreetMap.';
+      if (skippedDupeCount > 0) msg += ' (' + skippedDupeCount + ' already present)';
+      msg += ' Review the list and add anything missing.';
+      Toast.show(msg, 'success', { duration: 8000 });
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // DYNAMIC EVENT DISPATCH (data-action="...")
   // ---------------------------------------------------------------------
 
@@ -444,13 +528,7 @@
               return;
             }
 
-            const feature = window.FirstDue.Map.buildPolygonFeatureFromVertices(verts, { boxNumber: boxNumber, label: label });
-            Store.addBox(feature);
-            window.FirstDue.Map.cancelDrawing();
-            hideDrawBanner();
-            syncTopBarDrawButtons();
-            renderActiveTab();
-            Toast.show('Box ' + boxNumber + ' saved.', 'success');
+            saveNewBoxWithStreetLookup(verts, boxNumber, label);
           });
           break;
 
@@ -681,13 +759,7 @@
         const label = window.prompt('Optional label for this box (or leave blank):') || '';
         const v = window.FirstDue.Map.finishDrawing();
         if (!v) return;
-        const feature = window.FirstDue.Map.buildPolygonFeatureFromVertices(v, { boxNumber: boxNumber.trim(), label: label.trim() });
-        Store.addBox(feature);
-        window.FirstDue.Map.cancelDrawing();
-        hideDrawBanner();
-        syncTopBarDrawButtons();
-        renderActiveTab();
-        Toast.show('Box ' + boxNumber.trim() + ' saved.', 'success');
+        saveNewBoxWithStreetLookup(v, boxNumber.trim(), label.trim());
       } else {
         if (Store.state.drawingVertices.length < 2) {
           // streetDrawVertices tracked in map module; check via global flag length is not exposed here,
@@ -779,6 +851,7 @@
     onDrawVertexAdded: onDrawVertexAdded,
     onStreetDrawVertexAdded: onStreetDrawVertexAdded,
     collapseSheetIfNeeded: collapseSheetIfNeeded,
+    saveNewBoxWithStreetLookup: saveNewBoxWithStreetLookup,
   });
 
   // Override renderActiveTab to also re-render the quiz overlay (overlay is

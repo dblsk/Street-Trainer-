@@ -311,6 +311,105 @@
   }
 
   // ---------------------------------------------------------------------
+  // TEST: Overpass street auto-discovery (query builder, way-merging, and
+  // fetchStreetsForPolygon with a mocked fetch — no real network call)
+  // ---------------------------------------------------------------------
+  function testOverpassStreetDiscovery() {
+    section('Overpass Street Auto-Discovery');
+
+    const MapMod = window.FirstDue.Map;
+    const internal = MapMod._internal;
+
+    if (!internal.buildOverpassQuery || !internal.mergeAdjacentNamedWays) {
+      fail('Overpass internals not exported', 'buildOverpassQuery/mergeAdjacentNamedWays missing from Map._internal');
+      return;
+    }
+
+    // --- Query builder ---
+    const verts = [[28.04, -82.46], [28.05, -82.46], [28.05, -82.45], [28.04, -82.45]];
+    const query = internal.buildOverpassQuery(verts);
+    assert(query.startsWith('[out:json]'), 'query starts with [out:json]', query.slice(0, 20));
+    assert(query.includes('poly:"28.04 -82.46'), 'query embeds polygon coordinates as "lat lon lat lon..."', query);
+    assert(query.includes('["name"]'), 'query requires a name tag', query);
+    assert(query.includes('out geom'), 'query requests inline geometry via "out geom"', query);
+    assert(!/\.\d{7,}/.test(query), 'coordinates are rounded to 6 decimal places');
+
+    // --- mergeAdjacentNamedWays: contiguous same-name ways merge; disconnected same-name ways stay separate ---
+    const wayA = { id: 1, tags: { name: 'Main St' }, geometry: [{ lat: 28.04, lon: -82.46 }, { lat: 28.041, lon: -82.459 }] };
+    const wayB = { id: 2, tags: { name: 'Main St' }, geometry: [{ lat: 28.041, lon: -82.459 }, { lat: 28.042, lon: -82.458 }] };
+    const wayC = { id: 3, tags: { name: 'Oak Ave' }, geometry: [{ lat: 28.05, lon: -82.45 }, { lat: 28.051, lon: -82.449 }] };
+    const wayD = { id: 4, tags: { name: 'Oak Ave' }, geometry: [{ lat: 28.06, lon: -82.44 }, { lat: 28.061, lon: -82.439 }] };
+
+    const merged = internal.mergeAdjacentNamedWays([wayA, wayB, wayC, wayD]);
+    const mainSt = merged.find(function (m) { return m.tags.name === 'Main St'; });
+    assert(merged.length === 3, 'merge produces 3 chains (1 merged Main St + 2 separate Oak Ave)', merged.length);
+    assert(!!mainSt && mainSt.geometry.length === 3 && mainSt.osmIds.length === 2, 'adjacent same-name ways merge into one chain spanning both', mainSt);
+    assert(merged.filter(function (m) { return m.tags.name === 'Oak Ave'; }).length === 2, 'disconnected same-name ways remain separate features');
+
+    // --- fetchStreetsForPolygon with a mocked fetch (success path) ---
+    const realFetch = window.fetch;
+    try {
+      window.fetch = function () {
+        return Promise.resolve({
+          ok: true,
+          json: function () {
+            return Promise.resolve({
+              elements: [
+                { type: 'way', id: 201, tags: { highway: 'residential', name: 'Diagnostic Test Dr' }, geometry: [{ lat: 28.041, lon: -82.459 }, { lat: 28.042, lon: -82.458 }] },
+                { type: 'way', id: 202, tags: { highway: 'residential', name: 'Diagnostic Test Dr' }, geometry: [{ lat: 28.042, lon: -82.458 }, { lat: 28.043, lon: -82.457 }] },
+                { type: 'way', id: 203, tags: { highway: 'footway', name: 'Excluded Footpath' }, geometry: [{ lat: 28.05, lon: -82.45 }, { lat: 28.051, lon: -82.449 }] },
+                { type: 'way', id: 204, tags: { highway: 'residential' }, geometry: [{ lat: 28.06, lon: -82.44 }, { lat: 28.061, lon: -82.439 }] },
+              ],
+            });
+          },
+        });
+      };
+
+      return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result) {
+        assert(result.error === null, 'mocked successful fetch returns no error', result.error);
+        assert(result.rawWayCount === 2, 'rawWayCount counts only valid named-highway ways (excludes footway and unnamed)', result.rawWayCount);
+        assert(result.features.length === 1, 'two adjacent same-name ways merge into a single feature', result.features.length);
+
+        const feature = result.features[0];
+        if (feature) {
+          assert(feature.properties.name === 'Diagnostic Test Dr', 'merged feature has the expected name', feature.properties.name);
+          assert(feature.properties.boxNumber === '__DIAG_OVERPASS__', 'feature is tagged with the requesting boxNumber', feature.properties.boxNumber);
+          assert(feature.properties.source === 'osm', 'feature is tagged source="osm"', feature.properties.source);
+          assert(feature.geometry.type === 'LineString' && feature.geometry.coordinates.length === 3, 'merged feature geometry has 3 points (2+2 ways sharing 1 node)', feature.geometry);
+          assert(Math.abs(feature.geometry.coordinates[0][0] - (-82.459)) < 1e-9 && Math.abs(feature.geometry.coordinates[0][1] - 28.041) < 1e-9, 'feature coordinates are in [lng,lat] order', feature.geometry.coordinates[0]);
+        }
+
+        // --- Error paths: network failure and non-OK HTTP status ---
+        window.fetch = function () { return Promise.reject(new TypeError('mock network failure')); };
+        return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result2) {
+          assert(result2.features.length === 0 && typeof result2.error === 'string' && result2.error.toLowerCase().includes('manually'), 'network failure returns empty features with a "add manually" message', result2);
+
+          window.fetch = function () { return Promise.resolve({ ok: false, status: 503 }); };
+          return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result3) {
+            assert(result3.features.length === 0 && typeof result3.error === 'string', 'non-OK HTTP response returns empty features with an error message', result3);
+
+            // --- too-few-points guard: should not call fetch at all ---
+            let fetchCalled = false;
+            window.fetch = function () { fetchCalled = true; return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ elements: [] }); } }); };
+            return MapMod.fetchStreetsForPolygon([[28, -82], [28.1, -82]], '__DIAG_OVERPASS__').then(function (result4) {
+              assert(result4.features.length === 0 && typeof result4.error === 'string', 'a polygon with <3 points returns an error');
+              assert(fetchCalled === false, 'a polygon with <3 points does not call fetch at all');
+            });
+          });
+        });
+      }).catch(function (err) {
+        fail('testOverpassStreetDiscovery async chain threw', err.message);
+      }).finally(function () {
+        window.fetch = realFetch;
+      });
+    } catch (err) {
+      window.fetch = realFetch;
+      fail('testOverpassStreetDiscovery threw synchronously', err.message);
+      return Promise.resolve();
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // TEST: Quiz state machine (mocked — sandboxed, restores real quiz state)
   // ---------------------------------------------------------------------
   function testQuizStateMachine() {
@@ -473,7 +572,7 @@
   // ---------------------------------------------------------------------
   // RUN ALL
   // ---------------------------------------------------------------------
-  function runAll() {
+  async function runAll() {
     results = [];
     const startTime = performance.now();
 
@@ -487,6 +586,7 @@
     try { testLocalStorage(); } catch (e) { fail('testLocalStorage crashed', e.message); }
     try { testStoreMutators(); } catch (e) { fail('testStoreMutators crashed', e.message); }
     try { testMapRenderMocks(); } catch (e) { fail('testMapRenderMocks crashed', e.message); }
+    try { await testOverpassStreetDiscovery(); } catch (e) { fail('testOverpassStreetDiscovery crashed', e.message); }
     try { testQuizStateMachine(); } catch (e) { fail('testQuizStateMachine crashed', e.message); }
     try { testShuffleAndDuplicateAvoidance(); } catch (e) { fail('testShuffleAndDuplicateAvoidance crashed', e.message); }
     try { testImportExportRoundTrip(); } catch (e) { fail('testImportExportRoundTrip crashed', e.message); }

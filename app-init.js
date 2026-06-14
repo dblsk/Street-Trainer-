@@ -98,9 +98,9 @@
     document.getElementById('btn-run-diagnostics').addEventListener('click', function () {
       const output = document.getElementById('diagnostic-output');
       output.innerHTML = '<div class="diag-info">Running…</div>';
-      // Defer slightly so the "Running…" message paints before synchronous tests run
-      setTimeout(function () {
-        const summary = window.FirstDue.Diagnostics.runAll();
+      // Defer slightly so the "Running…" message paints before tests run
+      setTimeout(async function () {
+        const summary = await window.FirstDue.Diagnostics.runAll();
         window.FirstDue.Diagnostics.renderToElement(output);
         if (summary.failed === 0) {
           Toast.show('Diagnostics: all ' + summary.passed + ' checks passed.', 'success');

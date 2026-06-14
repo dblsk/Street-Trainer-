@@ -263,6 +263,7 @@
         '<label class="block"><span class="text-[10px] text-ink-500 font-mono">Label (optional)</span>' +
         '<input id="new-box-label" type="text" placeholder="e.g. North Sector" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2 py-1.5 font-mono text-xs focus:border-alert-cyan/60" /></label>' +
         '</div>' +
+        '<p class="text-[10px] text-ink-500 leading-relaxed mb-2">On save, named streets inside this shape are automatically pulled from OpenStreetMap. Anything missing can be added below afterward.</p>' +
         '<div class="flex gap-2">' +
         '<button data-action="finish-draw-box" class="flex-1 text-xs font-display font-600 uppercase tracking-wide py-1.5 rounded bg-alert-green/15 border border-alert-green/40 text-alert-green hover:bg-alert-green/25 transition-colors">Save Box (' + vCount + ' pts)</button>' +
         '<button data-action="cancel-draw-box" class="flex-1 text-xs font-display font-600 uppercase tracking-wide py-1.5 rounded bg-alert-red/15 border border-alert-red/40 text-alert-red hover:bg-alert-red/25 transition-colors">Cancel</button>' +
@@ -361,7 +362,12 @@
   }
 
   function streetEditRow(feature, boxes) {
+    const isOsm = feature.properties && feature.properties.source === 'osm';
+    const osmBadge = isOsm
+      ? '<span title="Auto-discovered from OpenStreetMap" class="shrink-0 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-alert-cyan/30 text-alert-cyan/80">OSM</span>'
+      : '';
     return '<div class="bg-base-800 border border-base-700 rounded-md p-2 flex items-center gap-1.5">' +
+      osmBadge +
       '<input data-action="edit-street-name" data-street-id="' + esc(feature.id) + '" type="text" value="' + esc(feature.properties.name || '') + '" placeholder="Street name" ' +
       'class="flex-1 min-w-0 bg-base-900 border border-base-600 rounded px-2 py-1 font-mono text-xs focus:border-alert-cyan/60" />' +
       '<select data-action="edit-street-box" data-street-id="' + esc(feature.id) + '" class="bg-base-900 border border-base-600 rounded px-1.5 py-1 font-mono text-xs focus:border-alert-cyan/60 w-24 shrink-0">' +
