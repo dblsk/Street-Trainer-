@@ -251,8 +251,9 @@
 
     let body = '';
 
-    // -- Draw New Box --
+    // -- Define Response Box: Fairfax County GIS import (primary) + manual drawing (collapsed) --
     body += sectionHeader('Define Response Box', 'shapes');
+
     if (drawing) {
       const vCount = Store.state.drawingVertices.length;
       body += '<div class="bg-alert-cyan/10 border border-alert-cyan/40 rounded-md p-3 mb-3">' +
@@ -270,8 +271,37 @@
         '</div>' +
         '</div>';
     } else {
-      body += '<button data-action="start-draw-box" class="w-full mb-3 text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors flex items-center justify-center gap-2">' +
-        '<i data-lucide="pencil" class="w-3.5 h-3.5"></i> Draw New Box on Map</button>';
+      // Primary: Fairfax County GIS import
+      body += '<div class="bg-base-800 border border-base-700 rounded-md p-3 mb-3">' +
+        '<div class="flex items-center gap-2 mb-2">' +
+        '<i data-lucide="cloud-download" class="w-4 h-4 text-alert-green"></i>' +
+        '<span class="text-xs font-display font-700 uppercase tracking-wide text-ink-100">Pull from Fairfax County GIS</span>' +
+        '</div>' +
+        '<p class="text-[10px] text-ink-500 leading-relaxed mb-2.5">Loads official Fire Box boundaries from Fairfax County\'s public GIS — no manual drawing needed. Fill in either or both fields.</p>' +
+        '<div class="grid grid-cols-2 gap-2 mb-2">' +
+        '<label class="block"><span class="text-[10px] text-ink-500 font-mono">Station Number</span>' +
+        '<input id="ffx-station-number" type="text" inputmode="numeric" placeholder="e.g. 41" class="mt-1 w-full bg-base-900 border border-base-600 rounded px-2 py-1.5 font-mono text-xs focus:border-alert-green/60" />' +
+        '<span class="text-[9px] text-ink-500 font-mono mt-0.5 block">Pulls that station\'s entire first-due</span>' +
+        '</label>' +
+        '<label class="block"><span class="text-[10px] text-ink-500 font-mono">Box Number(s)</span>' +
+        '<input id="ffx-box-numbers" type="text" placeholder="e.g. 3801, 3802" class="mt-1 w-full bg-base-900 border border-base-600 rounded px-2 py-1.5 font-mono text-xs focus:border-alert-green/60" />' +
+        '<span class="text-[9px] text-ink-500 font-mono mt-0.5 block">Comma or space separated</span>' +
+        '</label>' +
+        '</div>' +
+        '<button data-action="import-fairfax-boxes" class="w-full text-xs font-display font-600 uppercase tracking-wide py-2 rounded bg-alert-green/15 border border-alert-green/40 text-alert-green hover:bg-alert-green/25 transition-colors flex items-center justify-center gap-1.5">' +
+        '<i data-lucide="download" class="w-3.5 h-3.5"></i> Import Boxes</button>' +
+        '<p class="text-[9px] text-ink-500 leading-relaxed mt-2">Each imported box automatically gets its streets pulled from OpenStreetMap, same as a hand-drawn box. Boxes already in your list (by number) are skipped.</p>' +
+        '</div>';
+
+      // Secondary: manual drawing, collapsed by default
+      body += '<details class="mb-3 group">' +
+        '<summary class="cursor-pointer text-[11px] font-display font-600 uppercase tracking-wide text-ink-500 hover:text-ink-300 transition-colors flex items-center gap-1.5 select-none">' +
+        '<i data-lucide="chevron-right" class="w-3.5 h-3.5 transition-transform group-open:rotate-90"></i> Or draw a box manually</summary>' +
+        '<div class="mt-2">' +
+        '<button data-action="start-draw-box" class="w-full text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors flex items-center justify-center gap-2">' +
+        '<i data-lucide="pencil" class="w-3.5 h-3.5"></i> Draw New Box on Map</button>' +
+        '</div>' +
+        '</details>';
     }
 
     // -- Existing Boxes List --

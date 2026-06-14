@@ -349,32 +349,80 @@
   const STREET_DUPLICATE_TOLERANCE_DEG = 0.0003; // ~30m — midpoints within this distance + same normalized name are treated as the same street
 
   /**
-   * Persist a newly-drawn box, then asynchronously query Overpass for named
-   * streets inside it and add any that aren't already present. Always saves
-   * the box immediately (independent of the street lookup outcome) so a
-   * slow/failed network call never blocks box creation — per spec, the user
-   * can add missing streets manually afterward.
-   *
-   * @param {Array<[number,number]>} verts - drawing vertices, [lat,lng] pairs
-   * @param {string} boxNumber
-   * @param {string} label
+   * Extract one or more rings, each as an array of [lat,lng] pairs (the
+   * format fetchStreetsForPolygon/Overpass expects), from a Polygon or
+   * MultiPolygon GeoJSON geometry. Only outer rings are used (holes are
+   * ignored — a fire box with a donut hole still wants streets from its
+   * full extent for quiz purposes). Returns [] for unsupported geometry
+   * types.
    */
-  async function saveNewBoxWithStreetLookup(verts, boxNumber, label) {
-    const feature = window.FirstDue.Map.buildPolygonFeatureFromVertices(verts, { boxNumber: boxNumber, label: label });
+  function ringsAsLatLngFromGeometry(geometry) {
+    if (!geometry) return [];
+    if (geometry.type === 'Polygon') {
+      const outer = geometry.coordinates[0] || [];
+      return outer.length >= 3 ? [outer.map(function (c) { return [c[1], c[0]]; })] : [];
+    }
+    if (geometry.type === 'MultiPolygon') {
+      return geometry.coordinates
+        .map(function (poly) { return poly[0] || []; })
+        .filter(function (outer) { return outer.length >= 3; })
+        .map(function (outer) { return outer.map(function (c) { return [c[1], c[0]]; }); });
+    }
+    return [];
+  }
+
+  /**
+   * Core logic: persist a box feature (already built — Polygon or
+   * MultiPolygon), then asynchronously query Overpass for named streets
+   * within it (per-ring for MultiPolygon, merged/deduped) and add any not
+   * already present. Always saves the box immediately, independent of the
+   * street-lookup outcome.
+   *
+   * @param {GeoJSON.Feature} feature - full box feature, including `id`
+   * @param {{ silent?: boolean, skipRender?: boolean }} [options]
+   *   silent: suppress the per-box success/warn toast (used by batch
+   *     imports, which show one summary toast instead).
+   *   skipRender: don't call renderActiveTab() (used by batch imports,
+   *     which render once after the whole batch completes).
+   * @returns {Promise<{ addedStreets: number, skippedDupeStreets: number, streetError: string|null }>}
+   */
+  async function persistBoxWithStreetLookup(feature, options) {
+    options = options || {};
+    const boxNumber = feature.properties.boxNumber;
+
     Store.addBox(feature);
-    window.FirstDue.Map.cancelDrawing();
-    hideDrawBanner();
-    syncTopBarDrawButtons();
-    renderActiveTab();
+    if (!options.skipRender) renderActiveTab();
 
-    const loadingToastId = Toast.show('Box ' + boxNumber + ' saved. Looking up streets…', 'info', { sticky: true });
+    const rings = ringsAsLatLngFromGeometry(feature.geometry);
+    if (rings.length === 0) {
+      if (!options.silent) Toast.show('Box ' + boxNumber + ' saved, but its geometry has no usable ring for a street lookup. Add streets manually below.', 'warn', { duration: 7000 });
+      return { addedStreets: 0, skippedDupeStreets: 0, streetError: 'no usable geometry ring' };
+    }
 
-    let result;
-    try {
-      result = await window.FirstDue.Map.fetchStreetsForPolygon(verts, boxNumber);
-    } catch (err) {
-      console.error('[FirstDue] Unexpected error during street lookup:', err);
-      result = { features: [], rawWayCount: 0, error: 'Street lookup failed unexpectedly. You can add streets manually below.' };
+    const loadingToastId = options.silent ? null : Toast.show('Box ' + boxNumber + ' saved. Looking up streets…', 'info', { sticky: true });
+
+    // Query Overpass once per ring (a MultiPolygon box may have disjoint
+    // parts), merging results and deduping by OSM way id so a street that
+    // happens to touch two rings isn't added twice.
+    let combinedFeatures = [];
+    let firstError = null;
+    const seenOsmIds = new Set();
+
+    for (let i = 0; i < rings.length; i++) {
+      let result;
+      try {
+        result = await window.FirstDue.Map.fetchStreetsForPolygon(rings[i], boxNumber);
+      } catch (err) {
+        console.error('[FirstDue] Unexpected error during street lookup:', err);
+        result = { features: [], rawWayCount: 0, error: 'Street lookup failed unexpectedly.' };
+      }
+      if (result.error && !firstError) firstError = result.error;
+      result.features.forEach(function (sf) {
+        const key = (sf.properties.osmIds || []).join(',');
+        if (key && seenOsmIds.has(key)) return;
+        if (key) seenOsmIds.add(key);
+        combinedFeatures.push(sf);
+      });
     }
 
     if (loadingToastId) Toast.dismiss(loadingToastId);
@@ -391,7 +439,7 @@
     let addedCount = 0;
     let skippedDupeCount = 0;
 
-    result.features.forEach(function (sf) {
+    combinedFeatures.forEach(function (sf) {
       const normName = FD.normalizeStreetName(sf.properties.name || '');
       const midpoint = FD.lineMidpoint(sf.geometry.coordinates);
 
@@ -412,18 +460,164 @@
       addedCount++;
     });
 
-    renderActiveTab();
+    if (!options.skipRender) renderActiveTab();
 
-    if (result.error) {
-      Toast.show('Box ' + boxNumber + ': ' + result.error, 'warn', { duration: 7000 });
-    } else if (addedCount === 0) {
-      Toast.show('Box ' + boxNumber + ': no named streets found in OpenStreetMap for this area. Add streets manually below.', 'warn', { duration: 7000 });
-    } else {
-      let msg = 'Box ' + boxNumber + ': added ' + addedCount + ' street' + (addedCount === 1 ? '' : 's') + ' from OpenStreetMap.';
-      if (skippedDupeCount > 0) msg += ' (' + skippedDupeCount + ' already present)';
-      msg += ' Review the list and add anything missing.';
-      Toast.show(msg, 'success', { duration: 8000 });
+    if (!options.silent) {
+      if (firstError) {
+        Toast.show('Box ' + boxNumber + ': ' + firstError, 'warn', { duration: 7000 });
+      } else if (addedCount === 0) {
+        Toast.show('Box ' + boxNumber + ': no named streets found in OpenStreetMap for this area. Add streets manually below.', 'warn', { duration: 7000 });
+      } else {
+        let msg = 'Box ' + boxNumber + ': added ' + addedCount + ' street' + (addedCount === 1 ? '' : 's') + ' from OpenStreetMap.';
+        if (skippedDupeCount > 0) msg += ' (' + skippedDupeCount + ' already present)';
+        msg += ' Review the list and add anything missing.';
+        Toast.show(msg, 'success', { duration: 8000 });
+      }
     }
+
+    return { addedStreets: addedCount, skippedDupeStreets: skippedDupeCount, streetError: firstError };
+  }
+
+  /**
+   * Handle the "Import Boxes" button in the Fairfax County GIS panel:
+   * read station-number and box-number-list inputs, fetch matching Fire Box
+   * features from Fairfax County's public GIS, skip any whose box number
+   * already exists locally, persist the rest (each with its own Overpass
+   * street lookup, silenced — a single summary toast covers the whole
+   * batch), and render once at the end.
+   */
+  async function runFairfaxImport(buttonEl) {
+    const stationInput = document.getElementById('ffx-station-number');
+    const boxesInput = document.getElementById('ffx-box-numbers');
+
+    const stationText = stationInput ? stationInput.value.trim() : '';
+    const boxesText = boxesInput ? boxesInput.value.trim() : '';
+
+    const Import = window.FirstDue.Import;
+    const stationNumber = Import.parseStationNumber(stationText);
+    const boxList = Import.parseBoxNumberList(boxesText);
+
+    if (stationText && stationNumber === null) {
+      Toast.show('Station number must be a whole number (e.g. 41).', 'warn');
+      return;
+    }
+    if (boxList.invalidTokens.length > 0) {
+      Toast.show('Box numbers must be whole numbers — couldn\'t read: ' + boxList.invalidTokens.join(', '), 'warn', { duration: 6000 });
+      return;
+    }
+    if (stationNumber === null && boxList.numbers.length === 0) {
+      Toast.show('Enter a station number and/or at least one box number.', 'warn');
+      return;
+    }
+
+    const originalButtonHtml = buttonEl.innerHTML;
+    buttonEl.disabled = true;
+    buttonEl.classList.add('opacity-50', 'cursor-not-allowed');
+    buttonEl.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Importing…';
+    UI.refreshIcons(buttonEl);
+
+    const loadingToastId = Toast.show('Querying Fairfax County GIS…', 'info', { sticky: true });
+
+    let result;
+    try {
+      result = await Import.fetchFairfaxFireBoxes(stationNumber, boxList.numbers);
+    } catch (err) {
+      console.error('[FirstDue] Fairfax import failed unexpectedly:', err);
+      result = { features: [], rawCount: 0, error: 'Import failed unexpectedly. Try again, or draw the box manually.' };
+    }
+
+    if (loadingToastId) Toast.dismiss(loadingToastId);
+
+    if (result.error && result.features.length === 0) {
+      Toast.show(result.error, 'error', { duration: 7000 });
+      restoreButton();
+      return;
+    }
+
+    if (result.features.length === 0) {
+      const criteria = [];
+      if (stationNumber !== null) criteria.push('station ' + stationNumber);
+      if (boxList.numbers.length > 0) criteria.push('box number' + (boxList.numbers.length === 1 ? '' : 's') + ' ' + boxList.numbers.join(', '));
+      Toast.show('No Fire Box records found for ' + criteria.join(' or ') + '. Double-check the number(s), or draw the box manually.', 'warn', { duration: 7000 });
+      restoreButton();
+      return;
+    }
+
+    // Skip boxes that already exist locally (by boxNumber).
+    const toImport = [];
+    let skippedExisting = 0;
+    result.features.forEach(function (f) {
+      if (window.FirstDue.Map.findBoxByNumber(f.properties.boxNumber)) {
+        skippedExisting++;
+      } else {
+        toImport.push(f);
+      }
+    });
+
+    if (toImport.length === 0) {
+      Toast.show('Found ' + result.features.length + ' box' + (result.features.length === 1 ? '' : 'es') + ', but all are already in your list.', 'info', { duration: 6000 });
+      restoreButton();
+      return;
+    }
+
+    const progressToastId = Toast.show('Importing ' + toImport.length + ' box' + (toImport.length === 1 ? '' : 'es') + '… looking up streets for each.', 'info', { sticky: true });
+
+    let totalStreetsAdded = 0;
+    let boxesWithStreetErrors = 0;
+
+    for (let i = 0; i < toImport.length; i++) {
+      const f = toImport[i];
+      f.id = FD.genId('box');
+      try {
+        const r = await persistBoxWithStreetLookup(f, { silent: true, skipRender: true });
+        totalStreetsAdded += r.addedStreets;
+        if (r.streetError) boxesWithStreetErrors++;
+      } catch (err) {
+        console.error('[FirstDue] persistBoxWithStreetLookup failed for box ' + f.properties.boxNumber + ':', err);
+        boxesWithStreetErrors++;
+      }
+    }
+
+    if (progressToastId) Toast.dismiss(progressToastId);
+
+    renderActiveTab();
+    restoreButton();
+
+    // Final summary toast.
+    let msg = 'Imported ' + toImport.length + ' box' + (toImport.length === 1 ? '' : 'es') + ' from Fairfax County';
+    if (totalStreetsAdded > 0) {
+      msg += ' with ' + totalStreetsAdded + ' street' + (totalStreetsAdded === 1 ? '' : 's') + ' from OpenStreetMap';
+    }
+    msg += '.';
+    if (skippedExisting > 0) msg += ' ' + skippedExisting + ' already in your list, skipped.';
+    if (boxesWithStreetErrors > 0) msg += ' ' + boxesWithStreetErrors + ' box' + (boxesWithStreetErrors === 1 ? '' : 'es') + ' had street-lookup issues — check their street lists.';
+    Toast.show(msg, boxesWithStreetErrors > 0 ? 'warn' : 'success', { duration: 9000 });
+
+    function restoreButton() {
+      buttonEl.disabled = false;
+      buttonEl.classList.remove('opacity-50', 'cursor-not-allowed');
+      buttonEl.innerHTML = originalButtonHtml;
+      UI.refreshIcons(buttonEl);
+    }
+  }
+
+  /**
+   * Wrapper preserving the original entry point for manually-drawn boxes:
+   * builds a Polygon feature from drawing vertices, then delegates to
+   * persistBoxWithStreetLookup. Also handles the drawing-mode UI cleanup
+   * (cancel drawing, hide banner, etc.) that only applies to the manual
+   * draw flow.
+   *
+   * @param {Array<[number,number]>} verts - drawing vertices, [lat,lng] pairs
+   * @param {string} boxNumber
+   * @param {string} label
+   */
+  async function saveNewBoxWithStreetLookup(verts, boxNumber, label) {
+    const feature = window.FirstDue.Map.buildPolygonFeatureFromVertices(verts, { boxNumber: boxNumber, label: label });
+    window.FirstDue.Map.cancelDrawing();
+    hideDrawBanner();
+    syncTopBarDrawButtons();
+    await persistBoxWithStreetLookup(feature, {});
   }
 
   // ---------------------------------------------------------------------
@@ -532,6 +726,12 @@
               console.error('[FirstDue] saveNewBoxWithStreetLookup failed:', err);
               Toast.show('Box ' + boxNumber + ' saved, but street lookup failed unexpectedly. Add streets manually below.', 'warn', { duration: 7000 });
             });
+          });
+          break;
+
+        case 'import-fairfax-boxes':
+          el.addEventListener('click', function () {
+            runFairfaxImport(el);
           });
           break;
 
@@ -920,6 +1120,8 @@
     onStreetDrawVertexAdded: onStreetDrawVertexAdded,
     collapseSheetIfNeeded: collapseSheetIfNeeded,
     saveNewBoxWithStreetLookup: saveNewBoxWithStreetLookup,
+    persistBoxWithStreetLookup: persistBoxWithStreetLookup,
+    runFairfaxImport: runFairfaxImport,
   });
 
   // Override renderActiveTab to also re-render the quiz overlay (overlay is

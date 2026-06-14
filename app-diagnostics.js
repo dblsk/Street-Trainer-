@@ -430,6 +430,159 @@
   }
 
   // ---------------------------------------------------------------------
+  // TEST: Fairfax County GIS box import (input parsing, query construction,
+  // feature conversion, and a mocked end-to-end import including the
+  // per-box Overpass street lookup). Sandboxed — restores real data after.
+  // ---------------------------------------------------------------------
+  function testFairfaxImport() {
+    section('Fairfax County GIS Box Import');
+
+    const Import = window.FirstDue.Import;
+    if (!Import) {
+      fail('Fairfax import module not loaded', 'window.FirstDue.Import is missing');
+      return Promise.resolve();
+    }
+
+    // --- Input parsing ---
+    let r = Import.parseBoxNumberList('3801, 3802, 3815');
+    assert(JSON.stringify(r.numbers) === '[3801,3802,3815]' && r.invalidTokens.length === 0, 'parseBoxNumberList parses a comma-separated list', r);
+
+    r = Import.parseBoxNumberList('3801\n3802  3815,3820');
+    assert(JSON.stringify(r.numbers) === '[3801,3802,3815,3820]', 'parseBoxNumberList handles mixed whitespace/newline/comma separators', r);
+
+    r = Import.parseBoxNumberList('3801, abc, 3815');
+    assert(JSON.stringify(r.numbers) === '[3801,3815]' && JSON.stringify(r.invalidTokens) === '["abc"]', 'parseBoxNumberList separates invalid tokens from valid numbers', r);
+
+    r = Import.parseBoxNumberList('');
+    assert(r.numbers.length === 0 && r.invalidTokens.length === 0, 'parseBoxNumberList("") returns empty arrays');
+
+    assert(Import.parseStationNumber('41') === 41, 'parseStationNumber("41") = 41');
+    assert(Import.parseStationNumber(' 41 ') === 41, 'parseStationNumber trims whitespace');
+    assert(Import.parseStationNumber('') === null, 'parseStationNumber("") = null');
+    assert(Import.parseStationNumber('41.5') === null, 'parseStationNumber rejects non-integers', Import.parseStationNumber('41.5'));
+
+    // --- Where-clause construction ---
+    let w = Import.buildWhereClause(41, []);
+    assert(w === 'FIRST_DUE = 41 AND FIRE_BOX_NUM <> ' + Import._internal.GOMAPS_BOX_NUM, 'buildWhereClause: station-only excludes GOMAPS box', w);
+
+    w = Import.buildWhereClause(null, [3801, 3802]);
+    assert(w === 'FIRE_BOX_NUM IN (3801,3802) AND FIRE_BOX_NUM <> ' + Import._internal.GOMAPS_BOX_NUM, 'buildWhereClause: box-list-only', w);
+
+    w = Import.buildWhereClause(41, [3801, 3802]);
+    assert(w === '(FIRST_DUE = 41 OR FIRE_BOX_NUM IN (3801,3802)) AND FIRE_BOX_NUM <> ' + Import._internal.GOMAPS_BOX_NUM, 'buildWhereClause: combined criteria use OR + parens', w);
+
+    assert(Import.buildWhereClause(null, []) === null, 'buildWhereClause returns null when neither criterion is given');
+
+    // --- Feature conversion ---
+    const mockArcGisFeature = {
+      type: 'Feature',
+      properties: { FIRE_BOX_NUM: 3801.0, FIRE_BOX_TEXT: 'IONA SOUND DR AREA', FIRST_DUE: 41, BATTALION: '4B2', DIVISION: '420', JURISDICTION: 'FAIRFAX COUNTY', BOX_TYPE: null },
+      geometry: { type: 'Polygon', coordinates: [[[-77.1, 38.8], [-77.1, 38.81], [-77.09, 38.81], [-77.09, 38.8], [-77.1, 38.8]]] },
+    };
+    const converted = Import._internal.convertFairfaxFeatureToBoxFeature(mockArcGisFeature);
+    assert(!!converted, 'convertFairfaxFeatureToBoxFeature converts a valid ArcGIS feature');
+    if (converted) {
+      assert(converted.properties.boxNumber === '3801', 'converted boxNumber normalizes 3801.0 -> "3801"', converted.properties.boxNumber);
+      assert(converted.properties.label === 'IONA SOUND DR AREA', 'converted label uses FIRE_BOX_TEXT', converted.properties.label);
+      assert(converted.properties.layerType === 'box', 'converted feature has layerType "box"');
+      assert(converted.properties.source === 'fairfax-frd', 'converted feature is tagged source="fairfax-frd"');
+      assert(!converted.id, 'converted feature has no id (assigned by caller at persist time)');
+    }
+
+    const lineFeature = { type: 'Feature', properties: { FIRE_BOX_NUM: 1 }, geometry: { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };
+    assert(Import._internal.convertFairfaxFeatureToBoxFeature(lineFeature) === null, 'non-polygon geometry is rejected (returns null)');
+
+    const noBoxNum = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]] } };
+    assert(Import._internal.convertFairfaxFeatureToBoxFeature(noBoxNum) === null, 'feature with no FIRE_BOX_NUM is rejected (returns null)');
+
+    // --- Mocked end-to-end: fetchFairfaxFireBoxes + persistBoxWithStreetLookup (sandboxed) ---
+    const UI = window.FirstDue.UI;
+    if (!UI || !UI.persistBoxWithStreetLookup) {
+      fail('persistBoxWithStreetLookup not exported', 'window.FirstDue.UI.persistBoxWithStreetLookup is missing — skipping end-to-end import test');
+      return Promise.resolve();
+    }
+
+    const snapshot = {
+      boxes: FD.deepClone(Store.state.boxes),
+      streets: FD.deepClone(Store.state.streets),
+    };
+    const realFetch = window.fetch;
+
+    try {
+      // First call (Fairfax query) returns one box with FIRE_BOX_NUM 444444
+      // (a number unlikely to collide with the user's real data); second+
+      // calls (Overpass, via fetchStreetsForPolygon) return one named street.
+      let fetchCallCount = 0;
+      window.fetch = function (url) {
+        fetchCallCount++;
+        if (typeof url === 'string' && url.indexOf('fairfaxcounty.gov') !== -1) {
+          return Promise.resolve({
+            ok: true,
+            json: function () {
+              return Promise.resolve({
+                type: 'FeatureCollection',
+                features: [{
+                  type: 'Feature',
+                  properties: { FIRE_BOX_NUM: 444444.0, FIRE_BOX_TEXT: 'DIAG IMPORT BOX', FIRST_DUE: 99, BATTALION: '9B9', DIVISION: '999', JURISDICTION: 'TEST', BOX_TYPE: null },
+                  geometry: { type: 'Polygon', coordinates: [[[-77.10, 38.80], [-77.10, 38.81], [-77.09, 38.81], [-77.09, 38.80], [-77.10, 38.80]]] },
+                }],
+              });
+            },
+          });
+        }
+        // Overpass (or any other) call: return one named residential way.
+        return Promise.resolve({
+          ok: true,
+          json: function () {
+            return Promise.resolve({
+              elements: [
+                { type: 'way', id: 5001, tags: { highway: 'residential', name: 'Diag Import Ave' }, geometry: [{ lat: 38.805, lon: -77.099 }, { lat: 38.806, lon: -77.098 }] },
+              ],
+            });
+          },
+        });
+      };
+
+      return Import.fetchFairfaxFireBoxes(99, []).then(function (result) {
+        assert(result.error === null, 'mocked fetchFairfaxFireBoxes returns no error', result.error);
+        assert(result.features.length === 1, 'mocked fetchFairfaxFireBoxes returns 1 converted box feature', result.features.length);
+
+        const feature = result.features[0];
+        if (!feature) return;
+
+        feature.id = FD.genId('box');
+        assert(feature.properties.boxNumber === '444444', 'imported feature has the expected boxNumber', feature.properties.boxNumber);
+        assert(window.FirstDue.Map.findBoxByNumber('444444') === undefined, 'sandbox box number 444444 does not collide with existing data before persist');
+
+        return UI.persistBoxWithStreetLookup(feature, { silent: true, skipRender: true }).then(function (persistResult) {
+          assert(persistResult.addedStreets === 1, 'persistBoxWithStreetLookup adds 1 street from the mocked Overpass response', persistResult);
+          assert(persistResult.streetError === null, 'persistBoxWithStreetLookup reports no street error', persistResult.streetError);
+
+          const savedBox = window.FirstDue.Map.findBoxByNumber('444444');
+          assert(!!savedBox && savedBox.properties.source === 'fairfax-frd', 'imported box is persisted with source="fairfax-frd"', savedBox && savedBox.properties);
+
+          const savedStreets = window.FirstDue.Quiz.streetsForBox('444444');
+          assert(savedStreets.length === 1 && savedStreets[0].properties.name === 'Diag Import Ave', 'imported box has its auto-discovered street persisted', savedStreets);
+
+          assert(fetchCallCount >= 2, 'both the Fairfax GIS query and the Overpass street lookup were called', fetchCallCount);
+        });
+      }).catch(function (err) {
+        fail('testFairfaxImport async chain threw', err.message);
+      }).finally(function () {
+        window.fetch = realFetch;
+        Store.setBoxes(snapshot.boxes);
+        Store.setStreets(snapshot.streets);
+      });
+    } catch (err) {
+      window.fetch = realFetch;
+      Store.setBoxes(snapshot.boxes);
+      Store.setStreets(snapshot.streets);
+      fail('testFairfaxImport threw synchronously', err.message);
+      return Promise.resolve();
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // TEST: Quiz state machine (mocked — sandboxed, restores real quiz state)
   // ---------------------------------------------------------------------
   function testQuizStateMachine() {
@@ -685,6 +838,7 @@
     try { testStoreMutators(); } catch (e) { fail('testStoreMutators crashed', e.message); }
     try { testMapRenderMocks(); } catch (e) { fail('testMapRenderMocks crashed', e.message); }
     try { await testOverpassStreetDiscovery(); } catch (e) { fail('testOverpassStreetDiscovery crashed', e.message); }
+    try { await testFairfaxImport(); } catch (e) { fail('testFairfaxImport crashed', e.message); }
     try { testQuizStateMachine(); } catch (e) { fail('testQuizStateMachine crashed', e.message); }
     try { testShuffleAndDuplicateAvoidance(); } catch (e) { fail('testShuffleAndDuplicateAvoidance crashed', e.message); }
     try { testImportExportRoundTrip(); } catch (e) { fail('testImportExportRoundTrip crashed', e.message); }
