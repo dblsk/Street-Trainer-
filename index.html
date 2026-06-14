@@ -178,6 +178,14 @@ if (typeof tailwind !== 'undefined') {
   .sheet-expanded { transform: translateY(0); }
   #mobile-sheet { transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1); }
 
+  /* Quiz overlay: on mobile, sit just above the collapsed bottom-sheet handle
+     (64px) so quiz answer controls are never covered by it. On desktop the
+     sheet doesn't exist, so the overlay sits flush with the map bottom. */
+  #quiz-overlay { bottom: 64px; }
+  @media (min-width: 768px) {
+    #quiz-overlay { bottom: 0.75rem; } /* matches md:bottom-3 */
+  }
+
   /* Tab underline indicator */
   .tab-btn { position: relative; }
   .tab-btn.active { color: #e8edf5; }
@@ -284,6 +292,19 @@ if (typeof tailwind !== 'undefined') {
       <button id="btn-recenter" title="Return to home view" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 hover:border-alert-cyan/50 flex items-center justify-center backdrop-blur-sm transition-colors">
         <i data-lucide="home" class="w-4 h-4 text-ink-300"></i>
       </button>
+      <button id="btn-basemap" title="Switch basemap (Satellite / Light / Dark)" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 hover:border-alert-cyan/50 flex items-center justify-center backdrop-blur-sm transition-colors">
+        <i data-lucide="satellite" class="w-4 h-4 text-ink-300"></i>
+      </button>
+    </div>
+
+    <!-- Map right tools (mobile) -->
+    <div class="md:hidden flex absolute top-3 right-3 flex-col gap-2 z-[500]">
+      <button id="btn-recenter-m" title="Return to home view" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 flex items-center justify-center backdrop-blur-sm shadow-lg">
+        <i data-lucide="home" class="w-4 h-4 text-ink-300"></i>
+      </button>
+      <button id="btn-basemap-m" title="Switch basemap (Satellite / Light / Dark)" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 flex items-center justify-center backdrop-blur-sm shadow-lg">
+        <i data-lucide="satellite" class="w-4 h-4 text-ink-300"></i>
+      </button>
     </div>
 
     <!-- Drawing instructions banner -->
@@ -299,7 +320,7 @@ if (typeof tailwind !== 'undefined') {
     </div>
 
     <!-- Quiz overlay (rendered on map when quiz active) -->
-    <div id="quiz-overlay" class="hidden absolute inset-x-0 bottom-0 md:bottom-3 md:left-3 md:right-3 z-[600] flex justify-center pointer-events-none">
+    <div id="quiz-overlay" class="hidden absolute inset-x-0 md:left-3 md:right-3 z-[1100] flex justify-center pointer-events-none">
       <!-- injected by quiz engine -->
     </div>
 
@@ -393,6 +414,13 @@ if (typeof tailwind !== 'undefined') {
           <button id="btn-use-current-center" class="mt-2 w-full text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-base-600 hover:border-alert-cyan/50 text-ink-300 transition-colors flex items-center justify-center gap-1.5">
             <i data-lucide="crosshair" class="w-3.5 h-3.5"></i> Use Current Map Center
           </button>
+        </div>
+
+        <div>
+          <h3 class="text-xs font-display font-600 uppercase tracking-wider text-ink-500 mb-2">Map Display</h3>
+          <div id="basemap-selector" class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Basemap style">
+            <!-- buttons injected by app-init.js to stay in sync with BASEMAPS config -->
+          </div>
         </div>
 
         <div>

@@ -22,6 +22,7 @@
     homeZoom: 13,
     fuzzyTolerance: 1,
     labelsVisible: true,
+    basemap: 'satellite', // 'satellite' | 'light' | 'dark'
   };
 
   const MASTERY_THRESHOLDS = {

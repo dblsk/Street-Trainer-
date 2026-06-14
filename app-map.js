@@ -11,7 +11,8 @@
   const Toast = FD.Toast;
 
   let map = null;
-  let tileLayer = null;
+  let tileLayer = null;       // primary/base tile layer for the active basemap
+  let tileLabelsLayer = null; // optional secondary labels-overlay layer (e.g. satellite reference labels)
 
   // Layer groups
   let boxesLayerGroup = null;     // polygons for response boxes
@@ -26,9 +27,51 @@
   const streetLayerById = {};
   const labelMarkerById = {};
 
-  const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-  const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>';
   const TILE_SUBDOMAINS = ['a', 'b', 'c', 'd'];
+
+  // Available basemaps. 'satellite' uses Esri World Imagery (aerial photos,
+  // no API key required) plus a separate labels-only overlay so street/place
+  // names remain readable over imagery. 'dark' and 'light' are CartoDB
+  // basemaps (vector-style raster tiles, retina-capable).
+  const BASEMAPS = {
+    satellite: {
+      label: 'Satellite',
+      icon: 'satellite',
+      base: {
+        url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attribution: 'Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+        options: { maxZoom: 19 },
+      },
+      labels: {
+        url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        attribution: 'Esri, HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+        options: { maxZoom: 19 },
+      },
+    },
+    light: {
+      label: 'Light',
+      icon: 'sun',
+      base: {
+        url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>',
+        options: { maxZoom: 20, subdomains: TILE_SUBDOMAINS, detectRetina: true },
+      },
+      labels: null,
+    },
+    dark: {
+      label: 'Dark',
+      icon: 'moon',
+      base: {
+        url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>',
+        options: { maxZoom: 20, subdomains: TILE_SUBDOMAINS, detectRetina: true },
+      },
+      labels: null,
+    },
+  };
+
+  const BASEMAP_ORDER = ['satellite', 'light', 'dark'];
+  const DEFAULT_BASEMAP = 'satellite';
 
   // Overpass API: free OpenStreetMap road-data query service, used to
   // auto-populate a box's street list from its drawn polygon.
@@ -116,45 +159,84 @@
   }
 
   /**
-   * Load the OSM tile layer with error handling for render failures
-   * (e.g., offline, blocked tiles). If tiles fail to load entirely,
-   * surface the map-error banner so the rest of the app remains usable.
+   * Load the basemap tile layer(s) for the currently-selected basemap
+   * (Store.state.settings.basemap), with error handling for render
+   * failures (e.g., offline, blocked tiles). If tiles fail to load
+   * entirely, surface the map-error banner so the rest of the app
+   * remains usable.
+   *
+   * Some basemaps (satellite) consist of two stacked layers: an imagery
+   * base layer and a transparent "labels" reference overlay so street/place
+   * names remain legible over aerial photos. Single-layer basemaps (light,
+   * dark) only populate `tileLayer`; `tileLabelsLayer` stays null.
    */
   function loadTileLayer() {
     if (tileLayer) {
       map.removeLayer(tileLayer);
       tileLayer = null;
     }
+    if (tileLabelsLayer) {
+      map.removeLayer(tileLabelsLayer);
+      tileLabelsLayer = null;
+    }
+
+    const key = BASEMAPS[Store.state.settings.basemap] ? Store.state.settings.basemap : DEFAULT_BASEMAP;
+    const config = BASEMAPS[key];
 
     let tileErrorCount = 0;
     let tileLoadedCount = 0;
     let errorBannerShown = false;
 
-    tileLayer = L.tileLayer(TILE_URL, {
-      attribution: TILE_ATTRIBUTION,
-      maxZoom: 20,
-      subdomains: TILE_SUBDOMAINS,
-      detectRetina: true, // serves @2x tiles on high-DPI (retina) screens via the {r} placeholder
+    function attachErrorTracking(layer) {
+      layer.on('tileerror', function () {
+        tileErrorCount++;
+        // If a large proportion of tiles fail very early, assume connectivity issue.
+        if (tileErrorCount >= 6 && tileLoadedCount === 0 && !errorBannerShown) {
+          errorBannerShown = true;
+          Store.setMapError(true);
+        }
+      });
+      layer.on('tileload', function () {
+        tileLoadedCount++;
+        if (Store.state.mapError) {
+          Store.setMapError(false);
+        }
+      });
+    }
+
+    tileLayer = L.tileLayer(config.base.url, Object.assign({
+      attribution: config.base.attribution,
       crossOrigin: true,
-    });
-
-    tileLayer.on('tileerror', function () {
-      tileErrorCount++;
-      // If a large proportion of tiles fail very early, assume connectivity issue.
-      if (tileErrorCount >= 6 && tileLoadedCount === 0 && !errorBannerShown) {
-        errorBannerShown = true;
-        Store.setMapError(true);
-      }
-    });
-
-    tileLayer.on('tileload', function () {
-      tileLoadedCount++;
-      if (Store.state.mapError) {
-        Store.setMapError(false);
-      }
-    });
-
+    }, config.base.options));
+    attachErrorTracking(tileLayer);
     tileLayer.addTo(map);
+
+    if (config.labels) {
+      tileLabelsLayer = L.tileLayer(config.labels.url, Object.assign({
+        attribution: config.labels.attribution,
+        crossOrigin: true,
+      }, config.labels.options));
+      // No error-banner tracking here: a failure of this supplementary
+      // labels overlay shouldn't trigger the full map-error state when the
+      // base imagery layer is loading fine. Individual failed label tiles
+      // simply render as transparent gaps.
+      tileLabelsLayer.addTo(map);
+    }
+  }
+
+  /**
+   * Switch the active basemap (satellite/light/dark), persist the choice,
+   * and reload tiles. Falls back to DEFAULT_BASEMAP for unrecognized keys.
+   */
+  function setBasemap(key) {
+    if (!BASEMAPS[key]) key = DEFAULT_BASEMAP;
+    if (Store.state.settings.basemap === key) return;
+    Store.setSettings({ basemap: key });
+    if (map) loadTileLayer();
+  }
+
+  function getBasemap() {
+    return BASEMAPS[Store.state.settings.basemap] ? Store.state.settings.basemap : DEFAULT_BASEMAP;
   }
 
   function retryMapLoad() {
@@ -971,6 +1053,10 @@
     getMap: function () { return map; },
     invalidateSize: invalidateSize,
     retryMapLoad: retryMapLoad,
+    setBasemap: setBasemap,
+    getBasemap: getBasemap,
+    BASEMAPS: BASEMAPS,
+    BASEMAP_ORDER: BASEMAP_ORDER,
     bindStoreSubscriptions: bindStoreSubscriptions,
 
     // boxes / streets

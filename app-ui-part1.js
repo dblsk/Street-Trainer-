@@ -396,6 +396,7 @@
     document.getElementById('setting-zoom').value = s.homeZoom;
     document.getElementById('setting-fuzzy').value = s.fuzzyTolerance;
     document.getElementById('fuzzy-val').textContent = s.fuzzyTolerance;
+    window.FirstDue.UI.renderBasemapSelector();
     document.getElementById('settings-modal').classList.remove('hidden');
     refreshIcons(document.getElementById('settings-modal'));
   }

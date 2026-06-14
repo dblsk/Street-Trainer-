@@ -728,6 +728,65 @@
     });
   }
 
+  /**
+   * Update the basemap-switcher button icon/title to reflect the currently
+   * active basemap. Lucide replaces <i data-lucide="..."> with an inline
+   * <svg> on first render, so changing icons later means re-injecting an
+   * <i> placeholder and re-running createIcons for just that button.
+   */
+  function syncBasemapButtons() {
+    const key = window.FirstDue.Map.getBasemap();
+    const meta = window.FirstDue.Map.BASEMAPS[key];
+    if (!meta) return;
+
+    [document.getElementById('btn-basemap'), document.getElementById('btn-basemap-m')].forEach(function (btn) {
+      if (!btn) return;
+      btn.title = 'Basemap: ' + meta.label + ' (tap to switch)';
+      if (btn.dataset.basemapIcon === meta.icon) return;
+
+      btn.dataset.basemapIcon = meta.icon;
+      btn.innerHTML = '<i data-lucide="' + meta.icon + '" class="w-4 h-4 text-ink-300"></i>';
+      UI.refreshIcons(btn);
+    });
+  }
+
+  /**
+   * Render the 3-way basemap segmented control inside the Settings modal
+   * (#basemap-selector). Re-renders on every open so the active selection
+   * reflects the persisted setting, and on every selection so the active
+   * state updates immediately.
+   */
+  function renderBasemapSelector() {
+    const container = document.getElementById('basemap-selector');
+    if (!container) return;
+
+    const order = window.FirstDue.Map.BASEMAP_ORDER;
+    const current = window.FirstDue.Map.getBasemap();
+
+    container.innerHTML = order.map(function (key) {
+      const meta = window.FirstDue.Map.BASEMAPS[key];
+      const active = key === current;
+      const activeCls = active
+        ? 'border-alert-cyan/50 bg-alert-cyan/10 text-alert-cyan'
+        : 'border-base-600 text-ink-300 hover:border-base-500';
+      return '<button type="button" data-action="select-basemap" data-basemap="' + key + '" role="radio" aria-checked="' + (active ? 'true' : 'false') + '" ' +
+        'class="flex flex-col items-center gap-1 py-2 rounded border ' + activeCls + ' transition-colors text-[10px] font-display font-600 uppercase tracking-wide">' +
+        '<i data-lucide="' + meta.icon + '" class="w-4 h-4"></i>' + esc(meta.label) +
+        '</button>';
+    }).join('');
+
+    UI.refreshIcons(container);
+
+    container.querySelectorAll('[data-action="select-basemap"]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const key = btn.dataset.basemap;
+        window.FirstDue.Map.setBasemap(key);
+        UI.syncBasemapButtons();
+        renderBasemapSelector(); // re-render to update active highlight
+      });
+    });
+  }
+
   function showDrawBanner(kind) {
     const banner = document.getElementById('draw-banner');
     if (!banner) return;
@@ -853,6 +912,8 @@
     bindDynamicHandlers: bindDynamicHandlers,
     syncTopBarLabelButtons: syncTopBarLabelButtons,
     syncTopBarDrawButtons: syncTopBarDrawButtons,
+    syncBasemapButtons: syncBasemapButtons,
+    renderBasemapSelector: renderBasemapSelector,
     showDrawBanner: showDrawBanner,
     hideDrawBanner: hideDrawBanner,
     onDrawVertexAdded: onDrawVertexAdded,

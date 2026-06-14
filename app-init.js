@@ -155,9 +155,26 @@
       });
     });
 
-    document.getElementById('btn-recenter').addEventListener('click', function () {
-      window.FirstDue.Map.recenterHome();
-      UI.renderActiveTab();
+    [document.getElementById('btn-recenter'), document.getElementById('btn-recenter-m')].forEach(function (btn) {
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        window.FirstDue.Map.recenterHome();
+        UI.renderActiveTab();
+      });
+    });
+
+    // Basemap switcher (desktop + mobile) — cycles satellite -> light -> dark -> satellite...
+    [document.getElementById('btn-basemap'), document.getElementById('btn-basemap-m')].forEach(function (btn) {
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        const order = window.FirstDue.Map.BASEMAP_ORDER;
+        const current = window.FirstDue.Map.getBasemap();
+        const next = order[(order.indexOf(current) + 1) % order.length];
+        window.FirstDue.Map.setBasemap(next);
+        UI.syncBasemapButtons();
+        const label = window.FirstDue.Map.BASEMAPS[next].label;
+        Toast.show('Basemap: ' + label, 'info', { duration: 1800 });
+      });
     });
 
     document.getElementById('btn-clear-focus').addEventListener('click', function () {
@@ -393,6 +410,7 @@
       syncActiveBoxPill();
       UI.syncTopBarLabelButtons();
       UI.syncTopBarDrawButtons();
+      UI.syncBasemapButtons();
 
       // 3. Wire up all static controls
       bindTabSwitching();

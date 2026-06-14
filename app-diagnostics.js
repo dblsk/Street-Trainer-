@@ -587,6 +587,84 @@
     assert(s.homeLng >= -180 && s.homeLng <= 180, 'persisted homeLng within valid range', s.homeLng);
     assert(s.homeZoom >= 1 && s.homeZoom <= 19, 'persisted homeZoom within valid range', s.homeZoom);
     assert(s.fuzzyTolerance >= 0 && s.fuzzyTolerance <= 3, 'persisted fuzzyTolerance within valid range', s.fuzzyTolerance);
+
+    const MapMod = window.FirstDue.Map;
+    assert(typeof s.basemap === 'string' && !!MapMod.BASEMAPS[s.basemap], 'persisted basemap is a recognized key', s.basemap);
+  }
+
+  // ---------------------------------------------------------------------
+  // TEST: Basemap switching (satellite/light/dark config, getBasemap,
+  // setBasemap, fallback for unrecognized keys). Sandboxed — restores the
+  // original basemap setting afterward.
+  // ---------------------------------------------------------------------
+  function testBasemapSwitching() {
+    section('Basemap Switching');
+
+    const MapMod = window.FirstDue.Map;
+    const originalBasemap = Store.state.settings.basemap;
+    let lastAppliedKey = originalBasemap; // tracks what the live map's tiles currently reflect
+
+    try {
+      // --- Config shape: every basemap has a base layer with url/attribution, and a label/icon ---
+      assert(Array.isArray(MapMod.BASEMAP_ORDER) && MapMod.BASEMAP_ORDER.length >= 2, 'BASEMAP_ORDER lists at least 2 basemaps', MapMod.BASEMAP_ORDER);
+      MapMod.BASEMAP_ORDER.forEach(function (key) {
+        const meta = MapMod.BASEMAPS[key];
+        assert(!!meta, 'BASEMAP_ORDER entry "' + key + '" has a corresponding BASEMAPS config', key);
+        if (!meta) return;
+        assert(typeof meta.label === 'string' && meta.label.length > 0, 'basemap "' + key + '" has a non-empty label', meta.label);
+        assert(typeof meta.icon === 'string' && meta.icon.length > 0, 'basemap "' + key + '" has an icon name', meta.icon);
+        assert(!!meta.base && typeof meta.base.url === 'string' && meta.base.url.indexOf('{z}') !== -1, 'basemap "' + key + '" base layer URL is a tile template containing {z}', meta.base && meta.base.url);
+        assert(!!meta.base && typeof meta.base.attribution === 'string' && meta.base.attribution.length > 0, 'basemap "' + key + '" base layer has a non-empty attribution', meta.base && meta.base.attribution);
+        if (meta.labels) {
+          assert(typeof meta.labels.url === 'string' && meta.labels.url.indexOf('{z}') !== -1, 'basemap "' + key + '" labels layer URL is a tile template containing {z}', meta.labels.url);
+        }
+      });
+
+      // --- satellite config specifically: imagery + labels overlay (the combination requested for visibility) ---
+      const sat = MapMod.BASEMAPS.satellite;
+      assert(!!sat, 'a "satellite" basemap is configured');
+      if (sat) {
+        assert(!!sat.labels, 'satellite basemap includes a labels overlay layer (so street/place names remain visible over imagery)', sat.labels);
+        assert(sat.base.url.indexOf('World_Imagery') !== -1, 'satellite base layer uses Esri World Imagery service', sat.base.url);
+      }
+
+      // --- getBasemap() returns the current persisted key ---
+      Store.setSettings({ basemap: 'dark' });
+      assert(MapMod.getBasemap() === 'dark', 'getBasemap() reflects Store.state.settings.basemap after a direct settings change');
+
+      // --- getBasemap() falls back to DEFAULT_BASEMAP for an unrecognized persisted value ---
+      Store.setSettings({ basemap: '__not_a_real_basemap__' });
+      const fallback = MapMod.getBasemap();
+      assert(!!MapMod.BASEMAPS[fallback], 'getBasemap() falls back to a valid key when the persisted value is unrecognized', fallback);
+
+      // --- setBasemap() persists a valid key, reloads live tiles when the key changes, and is idempotent for the same key ---
+      Store.setSettings({ basemap: 'light' });
+      MapMod.setBasemap('dark');
+      lastAppliedKey = 'dark';
+      assert(Store.state.settings.basemap === 'dark', 'setBasemap("dark") persists to Store.state.settings.basemap');
+
+      MapMod.setBasemap('dark'); // no-op, same key — live tiles remain on 'dark'
+      assert(Store.state.settings.basemap === 'dark', 'setBasemap() with the already-active key is a harmless no-op');
+
+      // --- setBasemap() with an unrecognized key falls back to DEFAULT_BASEMAP rather than persisting garbage ---
+      MapMod.setBasemap('__bogus__');
+      lastAppliedKey = MapMod.getBasemap();
+      assert(!!MapMod.BASEMAPS[Store.state.settings.basemap], 'setBasemap() with an unrecognized key results in a valid persisted basemap', Store.state.settings.basemap);
+
+    } catch (err) {
+      fail('testBasemapSwitching threw an exception', err.message);
+    } finally {
+      // Restore the live map to its pre-test basemap. setBasemap() only
+      // reloads tiles when the requested key differs from the current
+      // persisted value, so call it while lastAppliedKey is still current
+      // to guarantee the reload actually fires (when needed).
+      if (lastAppliedKey !== originalBasemap && Store.state.mapReady) {
+        MapMod.setBasemap(originalBasemap);
+      }
+      // Always ensure the persisted setting matches, even if mapReady is
+      // false (setBasemap no-ops without a live map in that case).
+      Store.setSettings({ basemap: originalBasemap });
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -611,6 +689,7 @@
     try { testShuffleAndDuplicateAvoidance(); } catch (e) { fail('testShuffleAndDuplicateAvoidance crashed', e.message); }
     try { testImportExportRoundTrip(); } catch (e) { fail('testImportExportRoundTrip crashed', e.message); }
     try { testSettingsBounds(); } catch (e) { fail('testSettingsBounds crashed', e.message); }
+    try { testBasemapSwitching(); } catch (e) { fail('testBasemapSwitching crashed', e.message); }
 
     const elapsed = (performance.now() - startTime).toFixed(1);
     const total = results.filter(function (r) { return r.cls === 'diag-pass' || r.cls === 'diag-fail'; }).length;
