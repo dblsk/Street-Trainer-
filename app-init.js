@@ -352,6 +352,26 @@
     });
   }
 
+  /**
+   * Safety net: if any Promise rejects without a .catch() anywhere in the
+   * app, log it and surface a toast instead of failing silently. This is
+   * especially relevant for async UI actions (e.g. the Overpass street
+   * lookup) where a thrown error before the first `await` could otherwise
+   * produce an unhandled rejection with no visible feedback to the user.
+   */
+  function bindGlobalErrorHandlers() {
+    window.addEventListener('unhandledrejection', function (e) {
+      console.error('[FirstDue] Unhandled promise rejection:', e.reason);
+      try {
+        Toast.show('Something went wrong with a background task. Check the console for details.', 'error', { duration: 6000 });
+      } catch (toastErr) {
+        // Toast itself unavailable — nothing more we can do.
+      }
+      // Prevent the default "Uncaught (in promise)" console noise on top of our own log.
+      e.preventDefault();
+    });
+  }
+
   // ---------------------------------------------------------------------
   // APP INITIALIZATION
   // ---------------------------------------------------------------------
@@ -383,6 +403,7 @@
       bindResizeHandling();
       bindUISubscriptions();
       bindKeyboardShortcuts();
+      bindGlobalErrorHandlers();
 
       // 4. Render Lucide icons across the static shell
       UI.refreshIcons();

@@ -692,15 +692,14 @@
     }
 
     const query = buildOverpassQuery(verts);
+    const requestUrl = OVERPASS_ENDPOINT + '?data=' + encodeURIComponent(query);
     const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(function () { controller.abort(); }, OVERPASS_TIMEOUT_MS) : null;
 
     let response;
     try {
-      response = await fetch(OVERPASS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: query,
+      response = await fetch(requestUrl, {
+        method: 'GET',
         signal: controller ? controller.signal : undefined,
       });
     } catch (err) {
@@ -715,7 +714,10 @@
 
     if (!response.ok) {
       console.error('[FirstDue] Overpass returned HTTP ' + response.status);
-      return { features: [], rawWayCount: 0, error: 'Street lookup failed (server returned ' + response.status + '). You can add streets manually below.' };
+      const statusMsg = response.status === 429
+        ? 'Street lookup is rate-limited right now (too many requests). Try again in a minute, or add streets manually below.'
+        : 'Street lookup failed (server returned ' + response.status + '). You can add streets manually below.';
+      return { features: [], rawWayCount: 0, error: statusMsg };
     }
 
     let data;

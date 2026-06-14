@@ -379,21 +379,41 @@
           assert(Math.abs(feature.geometry.coordinates[0][0] - (-82.459)) < 1e-9 && Math.abs(feature.geometry.coordinates[0][1] - 28.041) < 1e-9, 'feature coordinates are in [lng,lat] order', feature.geometry.coordinates[0]);
         }
 
-        // --- Error paths: network failure and non-OK HTTP status ---
-        window.fetch = function () { return Promise.reject(new TypeError('mock network failure')); };
-        return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result2) {
-          assert(result2.features.length === 0 && typeof result2.error === 'string' && result2.error.toLowerCase().includes('manually'), 'network failure returns empty features with a "add manually" message', result2);
+        // --- Request shape: GET method with URL-encoded ?data= query (required for CORS compatibility) ---
+        let capturedUrl = null;
+        let capturedOpts = null;
+        window.fetch = function (url, opts) {
+          capturedUrl = url;
+          capturedOpts = opts;
+          return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ elements: [] }); } });
+        };
+        return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function () {
+          assert(capturedOpts && capturedOpts.method === 'GET', 'Overpass request uses GET (not POST) for CORS compatibility', capturedOpts && capturedOpts.method);
+          assert(typeof capturedUrl === 'string' && capturedUrl.indexOf('?data=') !== -1, 'Overpass request URL includes a ?data= query parameter', capturedUrl);
+          assert(typeof capturedUrl === 'string' && capturedUrl.indexOf('[') === -1 && capturedUrl.indexOf('"') === -1, 'Overpass query is properly URL-encoded (no raw [ or " characters)', capturedUrl);
+          assert(!capturedOpts || !capturedOpts.body, 'GET request has no request body');
 
-          window.fetch = function () { return Promise.resolve({ ok: false, status: 503 }); };
-          return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result3) {
-            assert(result3.features.length === 0 && typeof result3.error === 'string', 'non-OK HTTP response returns empty features with an error message', result3);
+          // --- Error paths: network failure, 429 rate limit, and other non-OK HTTP status ---
+          window.fetch = function () { return Promise.reject(new TypeError('mock network failure')); };
+          return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result2) {
+            assert(result2.features.length === 0 && typeof result2.error === 'string' && result2.error.toLowerCase().includes('manually'), 'network failure returns empty features with a "add manually" message', result2);
 
-            // --- too-few-points guard: should not call fetch at all ---
-            let fetchCalled = false;
-            window.fetch = function () { fetchCalled = true; return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ elements: [] }); } }); };
-            return MapMod.fetchStreetsForPolygon([[28, -82], [28.1, -82]], '__DIAG_OVERPASS__').then(function (result4) {
-              assert(result4.features.length === 0 && typeof result4.error === 'string', 'a polygon with <3 points returns an error');
-              assert(fetchCalled === false, 'a polygon with <3 points does not call fetch at all');
+            window.fetch = function () { return Promise.resolve({ ok: false, status: 429 }); };
+            return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result429) {
+              assert(result429.features.length === 0 && result429.error.toLowerCase().includes('rate-limited'), 'HTTP 429 returns a rate-limit-specific message', result429.error);
+
+              window.fetch = function () { return Promise.resolve({ ok: false, status: 503 }); };
+              return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result3) {
+                assert(result3.features.length === 0 && typeof result3.error === 'string', 'non-OK HTTP response returns empty features with an error message', result3);
+
+                // --- too-few-points guard: should not call fetch at all ---
+                let fetchCalled = false;
+                window.fetch = function () { fetchCalled = true; return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ elements: [] }); } }); };
+                return MapMod.fetchStreetsForPolygon([[28, -82], [28.1, -82]], '__DIAG_OVERPASS__').then(function (result4) {
+                  assert(result4.features.length === 0 && typeof result4.error === 'string', 'a polygon with <3 points returns an error');
+                  assert(fetchCalled === false, 'a polygon with <3 points does not call fetch at all');
+                });
+              });
             });
           });
         });

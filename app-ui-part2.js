@@ -528,7 +528,10 @@
               return;
             }
 
-            saveNewBoxWithStreetLookup(verts, boxNumber, label);
+            saveNewBoxWithStreetLookup(verts, boxNumber, label).catch(function (err) {
+              console.error('[FirstDue] saveNewBoxWithStreetLookup failed:', err);
+              Toast.show('Box ' + boxNumber + ' saved, but street lookup failed unexpectedly. Add streets manually below.', 'warn', { duration: 7000 });
+            });
           });
           break;
 
@@ -759,7 +762,11 @@
         const label = window.prompt('Optional label for this box (or leave blank):') || '';
         const v = window.FirstDue.Map.finishDrawing();
         if (!v) return;
-        saveNewBoxWithStreetLookup(v, boxNumber.trim(), label.trim());
+        const trimmedBoxNumber = boxNumber.trim();
+        saveNewBoxWithStreetLookup(v, trimmedBoxNumber, label.trim()).catch(function (err) {
+          console.error('[FirstDue] saveNewBoxWithStreetLookup failed:', err);
+          Toast.show('Box ' + trimmedBoxNumber + ' saved, but street lookup failed unexpectedly. Add streets manually below.', 'warn', { duration: 7000 });
+        });
       } else {
         if (Store.state.drawingVertices.length < 2) {
           // streetDrawVertices tracked in map module; check via global flag length is not exposed here,
