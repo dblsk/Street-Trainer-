@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>First Due | Box Study & Recall</title>
+
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<!-- Tailwind -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Lucide Icons -->
+<script src="https://unpkg.com/lucide@latest"></script>
+
+<!-- Google Fonts: Rajdhani (display/technical), Inter (body), JetBrains Mono (data/code) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<script>
+if (typeof tailwind !== 'undefined') {
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          // Apparatus MDT-inspired palette
+          base: {
+            950: '#0a0e14',
+            900: '#10151d',
+            800: '#161d28',
+            700: '#1f2836',
+            600: '#2c3848',
+            500: '#445166',
+          },
+          ink: {
+            100: '#e8edf5',
+            300: '#a8b5c8',
+            500: '#6b7a91',
+          },
+          alert: {
+            amber: '#ffb454',
+            red: '#ff5d5d',
+            green: '#5dffa3',
+            cyan: '#5de4ff',
+          }
+        },
+        fontFamily: {
+          display: ['Rajdhani', 'sans-serif'],
+          body: ['Inter', 'sans-serif'],
+          mono: ['JetBrains Mono', 'monospace'],
+        },
+        boxShadow: {
+          'glow-green': '0 0 0 1px rgba(93,255,163,0.4), 0 0 16px rgba(93,255,163,0.15)',
+          'glow-amber': '0 0 0 1px rgba(255,180,84,0.4), 0 0 16px rgba(255,180,84,0.15)',
+          'glow-red': '0 0 0 1px rgba(255,93,93,0.4), 0 0 16px rgba(255,93,93,0.15)',
+          'glow-cyan': '0 0 0 1px rgba(93,228,255,0.4), 0 0 16px rgba(93,228,255,0.15)',
+        }
+      }
+    }
+  };
+} else {
+  console.error('[FirstDue] Tailwind CDN failed to load. Styling will be degraded. Check network connectivity.');
+}
+</script>
+
+<style>
+  /* ===== Base resets / scrollbars ===== */
+  * { -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overscroll-behavior: none; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background-color: #0a0e14;
+    color: #e8edf5;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #10151d; }
+  ::-webkit-scrollbar-thumb { background: #2c3848; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #445166; }
+
+  /* Visible keyboard focus everywhere */
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid #5de4ff;
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* ===== Leaflet container ===== */
+  #map { width: 100%; height: 100%; background: #10151d; z-index: 0; }
+  .leaflet-container {
+    background: #10151d !important;
+    font-family: 'Inter', sans-serif !important;
+  }
+  /* Dark-mode tile filter: invert + hue-rotate to get a night-ops basemap from OSM */
+  .map-tiles-dark {
+    filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9) saturate(0.6);
+  }
+  .leaflet-control-zoom a {
+    background-color: #161d28 !important;
+    color: #e8edf5 !important;
+    border-color: #2c3848 !important;
+  }
+  .leaflet-control-zoom a:hover {
+    background-color: #1f2836 !important;
+  }
+  .leaflet-control-attribution {
+    background-color: rgba(10,14,20,0.7) !important;
+    color: #6b7a91 !important;
+  }
+  .leaflet-control-attribution a { color: #a8b5c8 !important; }
+  .leaflet-popup-content-wrapper {
+    background: #161d28 !important;
+    color: #e8edf5 !important;
+    border: 1px solid #2c3848;
+    border-radius: 6px;
+  }
+  .leaflet-popup-tip { background: #161d28 !important; }
+  .leaflet-bar { box-shadow: none !important; }
+
+  /* Street label markers */
+  .street-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: #e8edf5;
+    background: rgba(10,14,20,0.75);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid rgba(168,181,200,0.25);
+    white-space: nowrap;
+    pointer-events: none;
+    letter-spacing: 0.03em;
+  }
+
+  /* Dimming overlay for box-focus mode */
+  .dim-overlay { pointer-events: none; }
+
+  /* ===== Custom scrollable panel transitions ===== */
+  .panel-enter { animation: panelIn 0.18s ease-out; }
+  @keyframes panelIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Pulse for "active" / quiz target indicators */
+  @keyframes pulseRing {
+    0% { box-shadow: 0 0 0 0 rgba(93,228,255,0.55); }
+    70% { box-shadow: 0 0 0 8px rgba(93,228,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(93,228,255,0); }
+  }
+  .pulse-target { animation: pulseRing 1.6s infinite; }
+
+  @keyframes flashCorrect {
+    0%, 100% { background-color: rgba(93,255,163,0.0); }
+    30% { background-color: rgba(93,255,163,0.18); }
+  }
+  @keyframes flashWrong {
+    0%, 100% { background-color: rgba(255,93,93,0.0); }
+    30% { background-color: rgba(255,93,93,0.18); }
+  }
+  .flash-correct { animation: flashCorrect 0.5s ease-out; }
+  .flash-wrong { animation: flashWrong 0.5s ease-out; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-target, .flash-correct, .flash-wrong, .panel-enter { animation: none !important; }
+  }
+
+  /* ===== Layout helpers ===== */
+  .sidebar-scroll { -ms-overflow-style: none; }
+
+  /* Heat tile sizing */
+  .heat-tile { aspect-ratio: 1 / 1; }
+
+  /* Drawing mode cursor */
+  .leaflet-container.drawing-active { cursor: crosshair !important; }
+
+  /* Mobile bottom sheet */
+  .sheet-collapsed { transform: translateY(calc(100% - 64px)); }
+  .sheet-expanded { transform: translateY(0); }
+  #mobile-sheet { transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1); }
+
+  /* Tab underline indicator */
+  .tab-btn { position: relative; }
+  .tab-btn.active { color: #e8edf5; }
+  .tab-btn.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 0; right: 0;
+    height: 2px;
+    background: #5de4ff;
+    border-radius: 2px;
+  }
+
+  /* Diagnostic console */
+  #diagnostic-output {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+  .diag-pass { color: #5dffa3; }
+  .diag-fail { color: #ff5d5d; }
+  .diag-info { color: #a8b5c8; }
+  .diag-head { color: #5de4ff; }
+
+  /* Number input arrows hide (cleaner mono inputs) */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+
+  /* Toast */
+  #toast-stack { z-index: 2000; }
+  .toast-item { animation: toastIn 0.2s ease-out; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body class="h-full overflow-hidden font-body text-ink-100 text-sm">
+
+<!-- ============================================================
+     APP ROOT
+============================================================ -->
+<div id="app" class="h-full w-full flex flex-col md:flex-row relative">
+
+  <!-- ============================================================
+       DESKTOP SIDEBAR (also serves as content source for mobile sheet)
+  ============================================================ -->
+  <aside id="sidebar" class="hidden md:flex md:flex-col w-[380px] shrink-0 h-full bg-base-900 border-r border-base-700 z-10">
+    <!-- Header -->
+    <header class="px-4 pt-4 pb-3 border-b border-base-700 shrink-0">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-md bg-alert-red/15 border border-alert-red/40 flex items-center justify-center shrink-0">
+            <i data-lucide="flame" class="w-5 h-5 text-alert-red"></i>
+          </div>
+          <div class="leading-tight">
+            <h1 class="font-display font-700 text-lg tracking-wide text-ink-100">FIRST DUE</h1>
+            <p class="text-[10px] font-mono text-ink-500 uppercase tracking-[0.18em]">Box Study &amp; Recall</p>
+          </div>
+        </div>
+        <button id="btn-settings" aria-label="Open settings" class="w-9 h-9 rounded-md border border-base-700 hover:border-base-500 hover:bg-base-800 flex items-center justify-center transition-colors">
+          <i data-lucide="settings" class="w-4 h-4 text-ink-300"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="flex items-center gap-5 px-4 pt-3 border-b border-base-700 shrink-0" role="tablist" aria-label="Main sections">
+      <button class="tab-btn active pb-2.5 text-xs font-display font-600 uppercase tracking-wider text-ink-500 transition-colors" data-tab="dashboard" role="tab" aria-selected="true">Dashboard</button>
+      <button class="tab-btn pb-2.5 text-xs font-display font-600 uppercase tracking-wider text-ink-500 transition-colors" data-tab="builder" role="tab" aria-selected="false">Box Builder</button>
+      <button class="tab-btn pb-2.5 text-xs font-display font-600 uppercase tracking-wider text-ink-500 transition-colors" data-tab="study" role="tab" aria-selected="false">Study</button>
+      <button class="tab-btn pb-2.5 text-xs font-display font-600 uppercase tracking-wider text-ink-500 transition-colors" data-tab="quiz" role="tab" aria-selected="false">Quiz</button>
+    </nav>
+
+    <!-- Tab panels container -->
+    <div class="flex-1 overflow-y-auto sidebar-scroll" id="tab-content-desktop">
+      <!-- Tab content will be injected here, mirrored on mobile -->
+    </div>
+  </aside>
+
+  <!-- ============================================================
+       MAP AREA
+  ============================================================ -->
+  <main class="flex-1 relative h-full min-h-0">
+    <div id="map" role="application" aria-label="Interactive territory map"></div>
+
+    <!-- Map top bar (overlay) -->
+    <div class="absolute top-3 left-3 right-3 md:right-auto flex items-center gap-2 z-[500] pointer-events-none">
+      <div id="active-box-pill" class="hidden pointer-events-auto items-center gap-2 bg-base-900/90 border border-base-700 rounded-md pl-3 pr-2 py-1.5 backdrop-blur-sm shadow-lg">
+        <i data-lucide="locate-fixed" class="w-3.5 h-3.5 text-alert-cyan"></i>
+        <span class="font-mono text-xs font-700 tracking-wide" id="active-box-label">BOX 0000</span>
+        <button id="btn-clear-focus" aria-label="Clear box focus" class="ml-1 w-5 h-5 rounded hover:bg-base-700 flex items-center justify-center">
+          <i data-lucide="x" class="w-3 h-3 text-ink-500"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Map right tools (desktop) -->
+    <div class="hidden md:flex absolute top-3 right-3 flex-col gap-2 z-[500]">
+      <button id="btn-toggle-labels" aria-pressed="true" title="Toggle street labels" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 hover:border-alert-cyan/50 flex items-center justify-center backdrop-blur-sm transition-colors group">
+        <i data-lucide="tag" class="w-4 h-4 text-alert-cyan"></i>
+      </button>
+      <button id="btn-draw-mode" aria-pressed="false" title="Draw new response box" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 hover:border-alert-cyan/50 flex items-center justify-center backdrop-blur-sm transition-colors">
+        <i data-lucide="pencil" class="w-4 h-4 text-ink-300"></i>
+      </button>
+      <button id="btn-recenter" title="Return to home view" class="w-9 h-9 rounded-md bg-base-900/90 border border-base-700 hover:border-alert-cyan/50 flex items-center justify-center backdrop-blur-sm transition-colors">
+        <i data-lucide="home" class="w-4 h-4 text-ink-300"></i>
+      </button>
+    </div>
+
+    <!-- Drawing instructions banner -->
+    <div id="draw-banner" class="hidden absolute top-16 left-3 right-3 md:left-1/2 md:-translate-x-1/2 md:w-[420px] md:right-auto z-[500] bg-alert-cyan/10 border border-alert-cyan/40 rounded-md px-3 py-2 backdrop-blur-sm">
+      <div class="flex items-start gap-2">
+        <i data-lucide="info" class="w-4 h-4 text-alert-cyan shrink-0 mt-0.5"></i>
+        <p class="text-xs text-ink-100 leading-relaxed">Tap the map to place vertices (min. 3). Tap <span class="font-mono font-700">Finish Shape</span> when done, or <span class="font-mono font-700">Cancel</span> to exit.</p>
+      </div>
+      <div class="flex gap-2 mt-2">
+        <button id="btn-finish-draw" disabled class="flex-1 text-xs font-display font-600 uppercase tracking-wide py-1.5 rounded bg-alert-green/15 border border-alert-green/40 text-alert-green disabled:opacity-40 disabled:cursor-not-allowed hover:bg-alert-green/25 transition-colors">Finish Shape</button>
+        <button id="btn-cancel-draw" class="flex-1 text-xs font-display font-600 uppercase tracking-wide py-1.5 rounded bg-alert-red/15 border border-alert-red/40 text-alert-red hover:bg-alert-red/25 transition-colors">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Quiz overlay (rendered on map when quiz active) -->
+    <div id="quiz-overlay" class="hidden absolute inset-x-0 bottom-0 md:bottom-3 md:left-3 md:right-3 z-[600] flex justify-center pointer-events-none">
+      <!-- injected by quiz engine -->
+    </div>
+
+    <!-- Map render-failure banner -->
+    <div id="map-error-banner" class="hidden absolute inset-0 z-[900] bg-base-950/95 flex items-center justify-center p-6">
+      <div class="max-w-sm text-center">
+        <div class="w-12 h-12 mx-auto mb-3 rounded-full bg-alert-red/15 border border-alert-red/40 flex items-center justify-center">
+          <i data-lucide="map-pinned" class="w-6 h-6 text-alert-red"></i>
+        </div>
+        <h3 class="font-display font-700 text-base mb-1">Map failed to load</h3>
+        <p class="text-xs text-ink-300 mb-4 leading-relaxed">The basemap tiles could not be retrieved. Check your network connection — study tools that don't require the map are still available below.</p>
+        <button id="btn-retry-map" class="px-4 py-2 text-xs font-display font-600 uppercase tracking-wide rounded bg-alert-cyan/15 border border-alert-cyan/40 text-alert-cyan hover:bg-alert-cyan/25 transition-colors">Retry Loading Map</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============================================================
+       MOBILE BOTTOM SHEET
+  ============================================================ -->
+  <div id="mobile-sheet" class="sheet-collapsed md:hidden fixed inset-x-0 bottom-0 top-14 bg-base-900 border-t border-base-700 rounded-t-2xl z-[1000] flex flex-col shadow-2xl">
+    <!-- Drag handle / header -->
+    <button id="sheet-handle" class="shrink-0 w-full pt-2.5 pb-2 flex flex-col items-center" aria-expanded="false" aria-label="Toggle panel">
+      <span class="w-10 h-1.5 rounded-full bg-base-600"></span>
+      <div class="flex items-center gap-2 mt-2 px-4 w-full justify-between">
+        <div class="flex items-center gap-2">
+          <i data-lucide="flame" class="w-4 h-4 text-alert-red"></i>
+          <span class="font-display font-700 text-sm tracking-wide" id="sheet-title">DASHBOARD</span>
+        </div>
+        <i data-lucide="chevron-up" id="sheet-chevron" class="w-4 h-4 text-ink-500 transition-transform"></i>
+      </div>
+    </button>
+
+    <!-- Mobile tabs -->
+    <nav class="flex items-center gap-4 px-4 pt-1 pb-2 border-b border-base-700 shrink-0 overflow-x-auto" role="tablist" aria-label="Main sections (mobile)">
+      <button class="tab-btn-m active pb-2 text-xs font-display font-600 uppercase tracking-wider text-ink-500 whitespace-nowrap transition-colors" data-tab="dashboard">Dashboard</button>
+      <button class="tab-btn-m pb-2 text-xs font-display font-600 uppercase tracking-wider text-ink-500 whitespace-nowrap transition-colors" data-tab="builder">Builder</button>
+      <button class="tab-btn-m pb-2 text-xs font-display font-600 uppercase tracking-wider text-ink-500 whitespace-nowrap transition-colors" data-tab="study">Study</button>
+      <button class="tab-btn-m pb-2 text-xs font-display font-600 uppercase tracking-wider text-ink-500 whitespace-nowrap transition-colors" data-tab="quiz">Quiz</button>
+    </nav>
+
+    <div class="flex-1 overflow-y-auto sidebar-scroll" id="tab-content-mobile"></div>
+  </div>
+
+  <!-- Mobile top bar -->
+  <div class="md:hidden fixed top-0 inset-x-0 h-14 bg-base-900 border-b border-base-700 z-[900] flex items-center justify-between px-3">
+    <div class="flex items-center gap-2">
+      <div class="w-7 h-7 rounded-md bg-alert-red/15 border border-alert-red/40 flex items-center justify-center">
+        <i data-lucide="flame" class="w-4 h-4 text-alert-red"></i>
+      </div>
+      <span class="font-display font-700 text-sm tracking-wide">FIRST DUE</span>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <button id="btn-toggle-labels-m" aria-pressed="true" title="Toggle street labels" class="w-8 h-8 rounded-md border border-base-700 flex items-center justify-center">
+        <i data-lucide="tag" class="w-4 h-4 text-alert-cyan"></i>
+      </button>
+      <button id="btn-draw-mode-m" aria-pressed="false" title="Draw box" class="w-8 h-8 rounded-md border border-base-700 flex items-center justify-center">
+        <i data-lucide="pencil" class="w-4 h-4 text-ink-300"></i>
+      </button>
+      <button id="btn-settings-m" aria-label="Settings" class="w-8 h-8 rounded-md border border-base-700 flex items-center justify-center">
+        <i data-lucide="settings" class="w-4 h-4 text-ink-300"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       SETTINGS MODAL
+  ============================================================ -->
+  <div id="settings-modal" class="hidden fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-base-950/80 backdrop-blur-sm">
+    <div class="bg-base-900 border border-base-700 rounded-lg w-full max-w-md max-h-[85vh] overflow-y-auto panel-enter">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-base-700">
+        <h2 class="font-display font-700 text-base tracking-wide flex items-center gap-2"><i data-lucide="settings" class="w-4 h-4 text-alert-cyan"></i> Settings</h2>
+        <button id="btn-close-settings" aria-label="Close settings" class="w-7 h-7 rounded hover:bg-base-700 flex items-center justify-center"><i data-lucide="x" class="w-4 h-4 text-ink-300"></i></button>
+      </div>
+      <div class="p-4 space-y-5">
+        <div>
+          <h3 class="text-xs font-display font-600 uppercase tracking-wider text-ink-500 mb-2">Home Station Coordinates</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block">
+              <span class="text-[11px] text-ink-500 font-mono">Latitude</span>
+              <input id="setting-lat" type="number" step="0.000001" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2.5 py-1.5 font-mono text-xs text-ink-100 focus:border-alert-cyan/60" />
+            </label>
+            <label class="block">
+              <span class="text-[11px] text-ink-500 font-mono">Longitude</span>
+              <input id="setting-lng" type="number" step="0.000001" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2.5 py-1.5 font-mono text-xs text-ink-100 focus:border-alert-cyan/60" />
+            </label>
+          </div>
+          <label class="block mt-2">
+            <span class="text-[11px] text-ink-500 font-mono">Default Zoom (1–19)</span>
+            <input id="setting-zoom" type="number" min="1" max="19" step="1" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2.5 py-1.5 font-mono text-xs text-ink-100 focus:border-alert-cyan/60" />
+          </label>
+          <button id="btn-use-current-center" class="mt-2 w-full text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-base-600 hover:border-alert-cyan/50 text-ink-300 transition-colors flex items-center justify-center gap-1.5">
+            <i data-lucide="crosshair" class="w-3.5 h-3.5"></i> Use Current Map Center
+          </button>
+        </div>
+
+        <div>
+          <h3 class="text-xs font-display font-600 uppercase tracking-wider text-ink-500 mb-2">Quiz Settings</h3>
+          <label class="block">
+            <span class="text-[11px] text-ink-500 font-mono">Fuzzy Match Tolerance (0–3 edits)</span>
+            <input id="setting-fuzzy" type="range" min="0" max="3" step="1" class="mt-2 w-full accent-alert-cyan" />
+            <div class="flex justify-between text-[10px] font-mono text-ink-500 mt-1">
+              <span>Strict (0)</span><span id="fuzzy-val" class="text-alert-cyan font-700">1</span><span>Loose (3)</span>
+            </div>
+          </label>
+        </div>
+
+        <div>
+          <h3 class="text-xs font-display font-600 uppercase tracking-wider text-ink-500 mb-2">Data Management</h3>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="btn-export-geojson" class="text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-base-600 hover:border-alert-green/50 text-ink-300 hover:text-alert-green transition-colors flex items-center justify-center gap-1.5">
+              <i data-lucide="download" class="w-3.5 h-3.5"></i> Export GeoJSON
+            </button>
+            <label class="text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-base-600 hover:border-alert-cyan/50 text-ink-300 hover:text-alert-cyan transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
+              <i data-lucide="upload" class="w-3.5 h-3.5"></i> Import GeoJSON
+              <input id="input-import-geojson" type="file" accept=".json,.geojson,application/json,application/geo+json" class="hidden" />
+            </label>
+          </div>
+          <button id="btn-export-stats" class="mt-2 w-full text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-base-600 hover:border-alert-cyan/50 text-ink-300 transition-colors flex items-center justify-center gap-1.5">
+            <i data-lucide="bar-chart-3" class="w-3.5 h-3.5"></i> Export Performance Stats (JSON)
+          </button>
+          <button id="btn-reset-all" class="mt-2 w-full text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-red/40 hover:bg-alert-red/10 text-alert-red transition-colors flex items-center justify-center gap-1.5">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Reset All Local Data
+          </button>
+        </div>
+
+        <div>
+          <h3 class="text-xs font-display font-600 uppercase tracking-wider text-ink-500 mb-2">Diagnostics</h3>
+          <button id="btn-open-diagnostics" class="w-full text-xs font-display font-600 uppercase tracking-wide py-2 rounded border border-base-600 hover:border-alert-cyan/50 text-ink-300 transition-colors flex items-center justify-center gap-1.5">
+            <i data-lucide="terminal" class="w-3.5 h-3.5"></i> Run Diagnostic Test Suite
+          </button>
+        </div>
+
+        <p class="text-[10px] text-ink-500 font-mono leading-relaxed border-t border-base-700 pt-3">
+          v1.0.0 · All data stored locally in this browser via LocalStorage. No data leaves this device unless exported manually.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       DIAGNOSTICS MODAL
+  ============================================================ -->
+  <div id="diagnostics-modal" class="hidden fixed inset-0 z-[2000] flex items-center justify-center p-4 bg-base-950/80 backdrop-blur-sm">
+    <div class="bg-base-900 border border-base-700 rounded-lg w-full max-w-2xl max-h-[85vh] flex flex-col panel-enter">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-base-700 shrink-0">
+        <h2 class="font-display font-700 text-base tracking-wide flex items-center gap-2"><i data-lucide="terminal" class="w-4 h-4 text-alert-cyan"></i> Diagnostic Test Suite</h2>
+        <button id="btn-close-diagnostics" aria-label="Close diagnostics" class="w-7 h-7 rounded hover:bg-base-700 flex items-center justify-center"><i data-lucide="x" class="w-4 h-4 text-ink-300"></i></button>
+      </div>
+      <div class="p-4 flex-1 overflow-y-auto bg-base-950 rounded-b-lg">
+        <div id="diagnostic-output" class="diag-info">Press "Run All Tests" to begin vetting…</div>
+      </div>
+      <div class="p-3 border-t border-base-700 shrink-0 flex gap-2">
+        <button id="btn-run-diagnostics" class="flex-1 text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded bg-alert-cyan/15 border border-alert-cyan/40 text-alert-cyan hover:bg-alert-cyan/25 transition-colors flex items-center justify-center gap-1.5">
+          <i data-lucide="play" class="w-3.5 h-3.5"></i> Run All Tests
+        </button>
+        <button id="btn-clear-diagnostics" class="text-xs font-display font-600 uppercase tracking-wide py-2.5 px-4 rounded border border-base-600 text-ink-300 hover:border-base-500 transition-colors">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       TOAST STACK
+  ============================================================ -->
+  <div id="toast-stack" class="fixed bottom-3 left-1/2 -translate-x-1/2 md:left-auto md:right-3 md:-translate-x-0 flex flex-col gap-2 items-center md:items-end pointer-events-none w-full px-3 md:w-auto md:px-0"></div>
+
+</div>
+
+<!-- ============================================================
+     Leaflet JS
+============================================================ -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- ============================================================
+     FIRST DUE — Application Scripts (dependency order matters)
+============================================================ -->
+<script src="app-core.js"></script>
+<script src="app-map.js"></script>
+<script src="app-quiz.js"></script>
+<script src="app-ui-part1.js"></script>
+<script src="app-ui-part2.js"></script>
+<script src="app-diagnostics.js"></script>
+<script src="app-init.js"></script>
+
+</body>
+</html>
