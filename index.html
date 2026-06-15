@@ -186,17 +186,26 @@ if (typeof tailwind !== 'undefined') {
    *
    * HOWEVER: several of these elements ALSO carry a `flex` class for their
    * SHOWN layout (e.g. `class="... flex items-center justify-center ..."`).
-   * The browser's built-in `[hidden]{display:none}` and Tailwind's
-   * `.flex{display:flex}` have EQUAL specificity (0,1,0) — same as any
-   * single class — so whichever rule comes LATER in the stylesheet wins.
-   * Tailwind's generated utilities load after the UA stylesheet, so
-   * `.flex` was winning even when `hidden` was set, leaving these elements
-   * visible. Tag-qualified [hidden] selectors below have specificity
-   * (0,1,1), which beats a single class unconditionally — no !important,
-   * and #sidebar's `hidden md:flex` CLASS pattern is untouched since it
-   * doesn't use the hidden ATTRIBUTE at all.
+   * On a live page with Tailwind v4 (cdn.tailwindcss.com), Tailwind's
+   * utilities are emitted inside `@layer utilities`. Per the CSS cascade
+   * layers spec, layer membership is resolved BEFORE specificity — and
+   * depending on how the UA's [hidden] default and our own <style> block
+   * are positioned relative to that layer, `.flex` can end up winning over
+   * `div[hidden]` even though [hidden] has higher specificity (0,1,1 vs
+   * 0,1,0). Tailwind's `important` config flag can also make `.flex`
+   * itself `!important`, which no non-!important rule can ever beat
+   * regardless of layers or specificity.
+   *
+   * !important is the only thing that reliably wins in both cases, so it's
+   * used here. This is scoped to the hidden ATTRIBUTE selector
+   * (div[hidden], input[hidden]) specifically — NOT the bare `.hidden`
+   * CLASS — so it cannot affect #sidebar or the desktop map-controls bar,
+   * which use `class="hidden md:flex"` and never carry the hidden
+   * ATTRIBUTE. An attribute selector cannot match based on class alone, so
+   * !important here has no path to re-trigger the earlier regression where
+   * a blanket `.hidden{display:none!important}` defeated `md:flex`.
    */
-  div[hidden], input[hidden] { display: none; }
+  div[hidden], input[hidden] { display: none !important; }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: rgb(var(--c-base-900)); }

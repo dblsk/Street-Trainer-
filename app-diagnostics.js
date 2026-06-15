@@ -642,6 +642,93 @@
   }
 
   // ---------------------------------------------------------------------
+  // TEST: split-street dedup fix (mocked Overpass — sandboxed)
+  // ---------------------------------------------------------------------
+  /**
+   * Regression test for a bug where boxes ended up missing streets that
+   * ARE inside their polygon: when OSM splits a single named street into
+   * multiple disconnected segments (interrupted by a different road, a
+   * loop, a gap — common for ordinary residential streets), Overpass
+   * returns each segment as its own way. mergeAdjacentNamedWays correctly
+   * keeps these as separate chains (they don't share an endpoint), but the
+   * within-import duplicate-name+midpoint check in
+   * persistBoxWithStreetLookup previously compared each new street against
+   * streets ALREADY ADDED EARLIER IN THE SAME IMPORT — so if two segments
+   * of "Main St" had midpoints within ~30m of each other (easy for a
+   * street with a short gap), the second was treated as a duplicate of the
+   * first and silently dropped, even on a brand-new box with zero
+   * pre-existing streets.
+   *
+   * Fixed by making the duplicate check compare only against streets that
+   * existed in the database BEFORE this import started. This test mocks
+   * Overpass to return two same-named, nearby-but-disconnected ways plus
+   * one unrelated street, and confirms ALL THREE are persisted.
+   */
+  function testSplitStreetDedup() {
+    section('Split-Street Dedup Fix');
+
+    const UI = window.BoxRecall.UI;
+    if (!UI || !UI.saveNewBoxWithStreetLookup) {
+      fail('saveNewBoxWithStreetLookup not exported', 'window.BoxRecall.UI.saveNewBoxWithStreetLookup is missing — skipping');
+      return Promise.resolve();
+    }
+
+    const snapshot = {
+      boxes: FD.deepClone(Store.state.boxes),
+      streets: FD.deepClone(Store.state.streets),
+    };
+    const realFetch = window.fetch;
+
+    try {
+      window.fetch = function () {
+        return Promise.resolve({
+          ok: true,
+          json: function () {
+            return Promise.resolve({
+              elements: [
+                // "Main St" split into two disconnected segments ~17m
+                // apart (well under the ~30m STREET_DUPLICATE_TOLERANCE_DEG),
+                // no shared endpoint -- genuinely distinct street segments.
+                { type: 'way', id: 9001, tags: { highway: 'residential', name: 'Main St' }, geometry: [{ lat: 39.0500, lon: -76.9500 }, { lat: 39.0505, lon: -76.9500 }] },
+                { type: 'way', id: 9002, tags: { highway: 'residential', name: 'Main St' }, geometry: [{ lat: 39.0500, lon: -76.9498 }, { lat: 39.0505, lon: -76.9498 }] },
+                // Unrelated street, far away.
+                { type: 'way', id: 9003, tags: { highway: 'residential', name: 'Oak Ave' }, geometry: [{ lat: 39.0600, lon: -76.9600 }, { lat: 39.0605, lon: -76.9600 }] },
+              ],
+            });
+          },
+        });
+      };
+
+      const verts = [[39.045, -76.955], [39.045, -76.943], [39.065, -76.943], [39.065, -76.955]]; // [lat,lng]
+
+      return UI.saveNewBoxWithStreetLookup(verts, '__DIAG_SPLIT_STREET__', 'Diag Split Street Box').then(function () {
+        const streets = window.BoxRecall.Quiz.streetsForBox('__DIAG_SPLIT_STREET__');
+        const mainSt = streets.filter(function (f) { return f.properties.name === 'Main St'; });
+        const oakAve = streets.filter(function (f) { return f.properties.name === 'Oak Ave'; });
+
+        assert(streets.length === 3, 'all 3 streets are persisted (none dropped as a false duplicate)', streets.length);
+        assert(mainSt.length === 2, 'both "Main St" segments are kept as distinct streets', mainSt.length);
+        assert(oakAve.length === 1, '"Oak Ave" is also persisted', oakAve.length);
+
+        const mainStOsmIds = mainSt.map(function (f) { return (f.properties.osmIds || []).join(','); }).sort();
+        assert(mainStOsmIds.join('|') === '9001|9002', 'the two "Main St" features correspond to the two distinct OSM way ids', mainStOsmIds);
+      }).catch(function (err) {
+        fail('testSplitStreetDedup async chain threw', err.message);
+      }).finally(function () {
+        window.fetch = realFetch;
+        Store.setBoxes(snapshot.boxes);
+        Store.setStreets(snapshot.streets);
+      });
+    } catch (err) {
+      window.fetch = realFetch;
+      Store.setBoxes(snapshot.boxes);
+      Store.setStreets(snapshot.streets);
+      fail('testSplitStreetDedup threw synchronously', err.message);
+      return Promise.resolve();
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // TEST: Quiz state machine (mocked — sandboxed, restores real quiz state)
   // ---------------------------------------------------------------------
   function testQuizStateMachine() {
@@ -897,12 +984,21 @@
    * hidden ATTRIBUTE and hidden CLASS are independent and don't collide.
    *
    * SECOND FIX (this revision): several of these elements also carry a
-   * `flex` class for their shown layout. [hidden] and .flex have EQUAL
-   * specificity, so .flex (defined later, by Tailwind) was winning even
-   * when hidden=true — these elements stayed visible. Fixed via
-   * tag-qualified div[hidden]/input[hidden] selectors (specificity 0,1,1),
-   * which beat a single class unconditionally. See the synthetic-probe
-   * test below, which reproduces this exact conflict.
+   * `flex` class for their shown layout. On a live page with Tailwind v4,
+   * `.flex` lives in `@layer utilities` and/or may be `!important`
+   * (Tailwind's `important` config flag) — either can make `.flex` beat a
+   * plain `[hidden]{display:none}` regardless of [hidden]'s higher
+   * specificity, since cascade layers resolve before specificity and
+   * !important rules are compared separately. Fixed via
+   * `div[hidden], input[hidden] { display: none !important; }` —
+   * !important rules ARE compared by specificity among themselves (0,1,1
+   * beats 0,1,0), and an unlayered !important rule beats anything in any
+   * layer. This is scoped to the hidden ATTRIBUTE specifically, which
+   * #sidebar (class="hidden md:flex", no hidden attribute) can never
+   * match — so it can't re-trigger the earlier regression where a blanket
+   * `.hidden{display:none!important}` CLASS rule defeated #sidebar's
+   * `md:flex`. See the probe tests below, which reproduce all three ways
+   * .flex can be defined and confirm [hidden] wins in each.
    */
   function testHiddenClassEnforcement() {
     section('Hidden Attribute Enforcement');
@@ -951,44 +1047,52 @@
       fail('#sidebar exists in the DOM', 'not found');
     }
 
-    // --- [hidden] vs .flex specificity ---
-    // The browser's built-in [hidden]{display:none} and a single-class
-    // .flex{display:flex} have EQUAL specificity (0,1,0) — whichever rule
-    // is later in the stylesheet wins, and Tailwind's generated utilities
-    // load AFTER the UA stylesheet, so .flex was winning even when hidden
-    // was set. This regressed several real elements (settings-modal,
-    // quiz-overlay, map-error-banner, diagnostics-modal, active-box-pill —
-    // all of which carry `flex` in their shown-state class list) staying
-    // visible despite hidden=true. The fix is tag-qualified [hidden]
-    // selectors (div[hidden], input[hidden]), specificity (0,1,1), which
-    // beat a single class unconditionally without !important. This test
-    // reproduces the conflict directly: define .flex ourselves (simulating
-    // Tailwind, AFTER any of our own rules — worst case for our side) and
-    // confirm a hidden div with class="flex" still computes to display:none.
-    const flexProbeStyle = document.createElement('style');
-    flexProbeStyle.textContent = '.__diag_flex_probe__ { display: flex; }';
-    document.head.appendChild(flexProbeStyle);
+    // --- [hidden] vs .flex, across the ways .flex can be defined ---
+    // Several real elements (settings-modal, quiz-overlay, map-error-banner,
+    // diagnostics-modal, active-box-pill) carry `flex` in their shown-state
+    // class list. On a live page with Tailwind v4 (cdn.tailwindcss.com),
+    // .flex is emitted inside `@layer utilities`, and/or (with Tailwind's
+    // `important` config flag) as `!important`. Either can make .flex win
+    // over a plain [hidden]{display:none} regardless of [hidden]'s higher
+    // specificity (0,1,1 vs 0,1,0) — cascade layers are resolved BEFORE
+    // specificity, and !important rules are compared separately. The fix is
+    // div[hidden]/input[hidden] with !important: !important rules ARE
+    // compared by specificity among themselves, so our (0,1,1) beats a
+    // plain or !important (0,1,0) .flex either way, and an unlayered
+    // !important rule beats anything in any layer (the one exception to
+    // "unlayered loses to layered" that both layers and Tailwind docs call
+    // out). This test reproduces all three .flex definitions and confirms
+    // a hidden div with that class still computes to display:none in each.
+    const probeStyle = document.createElement('style');
+    probeStyle.textContent =
+      '.__diag_flex_plain__ { display: flex; }' +
+      '.__diag_flex_important__ { display: flex !important; }' +
+      '@layer __diag_test_layer__ { .__diag_flex_layered__ { display: flex; } }';
+    document.head.appendChild(probeStyle);
 
-    const flexProbe = document.createElement('div');
-    flexProbe.id = '__diag_hidden_flex_probe__';
-    flexProbe.className = '__diag_flex_probe__';
-    flexProbe.hidden = true;
-    document.body.appendChild(flexProbe);
+    [
+      { cls: '__diag_flex_plain__', label: 'a plain .flex class' },
+      { cls: '__diag_flex_important__', label: 'an !important .flex class (Tailwind "important" config flag)' },
+      { cls: '__diag_flex_layered__', label: 'a .flex class inside @layer (Tailwind v4 utilities layer)' },
+    ].forEach(function (probeDef) {
+      const el = document.createElement('div');
+      el.id = '__diag_hidden_probe_' + probeDef.cls;
+      el.className = probeDef.cls;
+      el.hidden = true;
+      document.body.appendChild(el);
+      try {
+        const hiddenDisplay = window.getComputedStyle(el).display;
+        assert(hiddenDisplay === 'none', 'a hidden <div> with ' + probeDef.label + ' still computes to display:none', hiddenDisplay);
 
-    try {
-      const hiddenWithFlexDisplay = window.getComputedStyle(flexProbe).display;
-      assert(hiddenWithFlexDisplay === 'none', 'a hidden <div> with an equal-specificity .flex class still computes to display:none (tag-qualified [hidden] wins)', hiddenWithFlexDisplay);
+        el.hidden = false;
+        const shownDisplay = window.getComputedStyle(el).display;
+        assert(shownDisplay === 'flex', 'once hidden=false, ' + probeDef.label + ' applies normally (display:flex)', shownDisplay);
+      } finally {
+        el.remove();
+      }
+    });
 
-      // And confirm un-hiding still lets .flex apply normally (the fix
-      // shouldn't make [hidden] permanently win regardless of the
-      // attribute's presence).
-      flexProbe.hidden = false;
-      const shownDisplay = window.getComputedStyle(flexProbe).display;
-      assert(shownDisplay === 'flex', 'once hidden=false, the .flex class applies normally (display:flex)', shownDisplay);
-    } finally {
-      flexProbe.remove();
-      flexProbeStyle.remove();
-    }
+    probeStyle.remove();
   }
 
   // ---------------------------------------------------------------------
@@ -1010,6 +1114,7 @@
     try { testMapRenderMocks(); } catch (e) { fail('testMapRenderMocks crashed', e.message); }
     try { await testOverpassStreetDiscovery(); } catch (e) { fail('testOverpassStreetDiscovery crashed', e.message); }
     try { await testFairfaxImport(); } catch (e) { fail('testFairfaxImport crashed', e.message); }
+    try { await testSplitStreetDedup(); } catch (e) { fail('testSplitStreetDedup crashed', e.message); }
     try { testQuizStateMachine(); } catch (e) { fail('testQuizStateMachine crashed', e.message); }
     try { testShuffleAndDuplicateAvoidance(); } catch (e) { fail('testShuffleAndDuplicateAvoidance crashed', e.message); }
     try { testImportExportRoundTrip(); } catch (e) { fail('testImportExportRoundTrip crashed', e.message); }

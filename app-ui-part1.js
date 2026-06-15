@@ -535,14 +535,47 @@
         '<i data-lucide="route" class="w-3.5 h-3.5"></i> Draw New Street on Map</button>';
     }
 
-    // List of streets (with inline edit for name + box assignment)
-    const streets = Store.state.streets.features || [];
-    body += '<div class="text-[10px] font-mono uppercase tracking-wider text-ink-500 mb-2">' + streets.length + ' street segment' + (streets.length === 1 ? '' : 's') + ' total</div>';
-    if (streets.length === 0) {
+    // List of streets (with inline edit for name + box assignment, and
+    // bulk select/delete scoped to the current box filter)
+    const allStreets = Store.state.streets.features || [];
+    const filterValue = Store.state.streetFilterBoxNumber || '';
+    const filteredStreets = streetsMatchingFilter(allStreets, filterValue);
+
+    body += '<div class="flex items-center justify-between gap-2 mb-2">' +
+      '<div class="text-[10px] font-mono uppercase tracking-wider text-ink-500">' +
+      filteredStreets.length + ' of ' + allStreets.length + ' street segment' + (allStreets.length === 1 ? '' : 's') +
+      (filterValue ? ' (filtered)' : '') +
+      '</div>' +
+      '</div>';
+
+    body += '<label class="block mb-2"><span class="text-[10px] text-ink-500 font-mono uppercase tracking-wider">Filter by box</span>' +
+      '<select data-action="filter-streets-by-box" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2 py-1.5 font-mono text-xs focus:border-alert-cyan/60">' +
+      streetFilterOptionsHtml(boxes, allStreets, filterValue) +
+      '</select></label>';
+
+    if (allStreets.length === 0) {
       body += emptyState('No streets yet. Draw streets above or import a GeoJSON file containing LineString features.', 'route');
+    } else if (filteredStreets.length === 0) {
+      body += emptyState('No streets match this filter.', 'route');
     } else {
+      const selectedCount = filteredStreets.filter(function (f) { return Store.state.selectedStreetIds.has(f.id); }).length;
+      const allSelected = filteredStreets.every(function (f) { return Store.state.selectedStreetIds.has(f.id); });
+
+      body += '<div class="flex items-center justify-between gap-2 mb-1.5">' +
+        '<label class="flex items-center gap-2 px-1 cursor-pointer select-none">' +
+        '<input type="checkbox" data-action="select-all-streets" class="w-4 h-4 rounded border-base-600 accent-alert-cyan cursor-pointer"' + (allSelected ? ' checked' : '') + ' />' +
+        '<span class="text-[10px] font-mono uppercase tracking-wider text-ink-500">' +
+        (selectedCount > 0 ? selectedCount + ' selected' : 'Select all' + (filterValue ? ' (filtered)' : '')) +
+        '</span>' +
+        '</label>' +
+        (selectedCount > 0
+          ? '<button data-action="bulk-delete-streets" class="text-xs font-display font-600 uppercase tracking-wide px-2.5 py-1 rounded bg-alert-red/15 border border-alert-red/40 text-alert-red hover:bg-alert-red/25 transition-colors flex items-center gap-1.5">' +
+            '<i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete Selected (' + selectedCount + ')</button>'
+          : '') +
+        '</div>';
+
       body += '<div class="space-y-1.5 max-h-[340px] overflow-y-auto pr-0.5">';
-      streets
+      filteredStreets
         .slice()
         .sort(function (a, b) {
           const an = (a.properties.name || '').toLowerCase();
@@ -556,6 +589,63 @@
     }
 
     return wrapTabPanel(body);
+  }
+
+  /**
+   * Filter a street feature list down to those matching `filterValue`:
+   *   '' (or falsy)     -> all streets
+   *   '__unassigned__'  -> streets with no boxNumber (null/undefined/'')
+   *   any other string  -> streets whose boxNumber matches (string-compared,
+   *                        since boxNumber may be stored as either a number
+   *                        or string depending on source)
+   *
+   * Shared between renderBuilderTab (what's displayed) and the
+   * select-all-streets handler ("select all VISIBLE streets"), so the two
+   * can't drift out of sync.
+   */
+  function streetsMatchingFilter(streets, filterValue) {
+    const fv = filterValue || '';
+    if (fv === '') return streets.slice();
+    return streets.filter(function (f) {
+      const bn = f.properties && f.properties.boxNumber;
+      if (fv === '__unassigned__') return bn === null || bn === undefined || bn === '';
+      return String(bn) === fv;
+    });
+  }
+
+  /**
+   * Filter dropdown options for the street list: "All Boxes" (with total
+   * count), one entry per box (with that box's street count), and
+   * "— Unassigned —" only if at least one street has no boxNumber.
+   */
+  function streetFilterOptionsHtml(boxes, allStreets, selectedValue) {
+    const countsByBox = {};
+    let unassignedCount = 0;
+    allStreets.forEach(function (f) {
+      const bn = f.properties && f.properties.boxNumber;
+      if (bn === null || bn === undefined || bn === '') {
+        unassignedCount++;
+      } else {
+        const key = String(bn);
+        countsByBox[key] = (countsByBox[key] || 0) + 1;
+      }
+    });
+
+    let html = '<option value=""' + (selectedValue === '' ? ' selected' : '') + '>All Boxes (' + allStreets.length + ')</option>';
+    boxes
+      .slice()
+      .sort(function (a, b) { return String(a.properties.boxNumber).localeCompare(String(b.properties.boxNumber), undefined, { numeric: true }); })
+      .forEach(function (f) {
+        const bn = String(f.properties.boxNumber);
+        const count = countsByBox[bn] || 0;
+        const sel = selectedValue === bn ? ' selected' : '';
+        html += '<option value="' + esc(bn) + '"' + sel + '>Box ' + esc(bn) + ' (' + count + ')</option>';
+      });
+    if (unassignedCount > 0) {
+      const sel = selectedValue === '__unassigned__' ? ' selected' : '';
+      html += '<option value="__unassigned__"' + sel + '>— Unassigned — (' + unassignedCount + ')</option>';
+    }
+    return html;
   }
 
   function boxOptionsHtml(boxes, selectedBoxNumber, includeUnassigned) {
@@ -577,7 +667,9 @@
     const osmBadge = isOsm
       ? '<span title="Auto-discovered from OpenStreetMap" class="shrink-0 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-alert-cyan/30 text-alert-cyan/80">OSM</span>'
       : '';
-    return '<div class="bg-base-800 border border-base-700 rounded-md p-2 flex items-center gap-1.5">' +
+    const isSelected = Store.state.selectedStreetIds.has(feature.id);
+    return '<div class="bg-base-800 border border-base-700 rounded-md p-2 flex items-center gap-1.5' + (isSelected ? ' ring-1 ring-alert-cyan/40' : '') + '">' +
+      '<input type="checkbox" data-action="toggle-street-select" data-street-id="' + esc(feature.id) + '" class="w-4 h-4 rounded border-base-600 accent-alert-cyan cursor-pointer shrink-0"' + (isSelected ? ' checked' : '') + ' />' +
       osmBadge +
       '<input data-action="edit-street-name" data-street-id="' + esc(feature.id) + '" type="text" value="' + esc(feature.properties.name || '') + '" placeholder="Street name" ' +
       'class="flex-1 min-w-0 bg-base-900 border border-base-600 rounded px-2 py-1 font-mono text-xs focus:border-alert-cyan/60" />' +
@@ -741,6 +833,7 @@
     masteryBadge: masteryBadge,
     wrapTabPanel: wrapTabPanel,
     boxOptionsHtml: boxOptionsHtml,
+    streetsMatchingFilter: streetsMatchingFilter,
     QUIZ_MODE_META: QUIZ_MODE_META,
     renderHomeTab: renderHomeTab,
     renderBoxDetailSheet: renderBoxDetailSheet,

@@ -284,6 +284,8 @@
       mapReady: false,
       mapError: false,
       selectedBoxIds: new Set(), // box feature ids currently checked in Manage's bulk-select list
+      selectedStreetIds: new Set(), // street feature ids currently checked in Manage's street list
+      streetFilterBoxNumber: '', // '' = all boxes, '__unassigned__' = streets with no boxNumber, else a boxNumber string
 
       // Quiz state machine
       quiz: {
@@ -368,6 +370,15 @@
       resetBoxStats(boxNumber);
       state.selectedBoxIds.delete(boxId);
 
+      // If the street-list filter was scoped to this box, reset it to "All
+      // Boxes" — otherwise the filter dropdown would show "All Boxes" (no
+      // option matches the stale value) while the list still filters by
+      // the now-nonexistent box number, showing an empty list that looks
+      // like "0 of N (filtered)" with no visible explanation.
+      if (state.streetFilterBoxNumber === String(boxNumber)) {
+        state.streetFilterBoxNumber = '';
+      }
+
       return true;
     }
 
@@ -398,6 +409,10 @@
       boxNumbers.forEach(function (bn) { resetBoxStats(bn); });
       idSet.forEach(function (id) { state.selectedBoxIds.delete(id); });
 
+      if (boxNumbers.has(String(state.streetFilterBoxNumber))) {
+        state.streetFilterBoxNumber = '';
+      }
+
       return targets.length;
     }
 
@@ -422,11 +437,59 @@
       return true;
     }
 
+    /**
+     * Remove a street and clean up its per-street stats entry (if any),
+     * under whichever box that street currently belongs to. Keeping
+     * stats[boxNumber].streetStats[streetId] around for a deleted street
+     * would be orphaned data with no UI ever showing it again.
+     */
     function removeStreet(streetId) {
-      const before = state.streets.features.length;
+      const target = state.streets.features.find(function (f) { return f.id === streetId; });
+      if (!target) return false;
+
       state.streets.features = state.streets.features.filter(function (f) { return f.id !== streetId; });
       setStreets(state.streets);
-      return state.streets.features.length < before;
+
+      const boxNumber = target.properties && target.properties.boxNumber;
+      if (boxNumber !== null && boxNumber !== undefined && state.stats[boxNumber] && state.stats[boxNumber].streetStats[streetId]) {
+        delete state.stats[boxNumber].streetStats[streetId];
+        setStats(state.stats);
+      }
+
+      state.selectedStreetIds.delete(streetId);
+
+      return true;
+    }
+
+    /**
+     * Cascade-delete multiple streets (and their per-street stats entries)
+     * in a single batched operation — used by Manage's bulk "Delete
+     * Selected" for streets. Equivalent to calling removeStreet() for each
+     * id, but writes to LocalStorage once rather than once per street.
+     *
+     * Returns the number of streets actually removed.
+     */
+    function removeStreetsCascade(streetIds) {
+      const idSet = new Set(streetIds);
+      const targets = state.streets.features.filter(function (f) { return idSet.has(f.id); });
+      if (targets.length === 0) return 0;
+
+      state.streets.features = state.streets.features.filter(function (f) { return !idSet.has(f.id); });
+      setStreets(state.streets);
+
+      let statsChanged = false;
+      targets.forEach(function (f) {
+        const boxNumber = f.properties && f.properties.boxNumber;
+        if (boxNumber !== null && boxNumber !== undefined && state.stats[boxNumber] && state.stats[boxNumber].streetStats[f.id]) {
+          delete state.stats[boxNumber].streetStats[f.id];
+          statsChanged = true;
+        }
+      });
+      if (statsChanged) setStats(state.stats);
+
+      idSet.forEach(function (id) { state.selectedStreetIds.delete(id); });
+
+      return targets.length;
     }
 
     function setStats(stats) {
@@ -564,6 +627,52 @@
       if (state.selectedBoxIds.size === 0) return;
       state.selectedBoxIds = new Set();
       emit('ui:boxSelection', state.selectedBoxIds);
+    }
+
+    // -- Bulk street selection (Manage tab) ----------------------------------
+
+    function toggleStreetSelection(streetId) {
+      if (state.selectedStreetIds.has(streetId)) {
+        state.selectedStreetIds.delete(streetId);
+      } else {
+        state.selectedStreetIds.add(streetId);
+      }
+      emit('ui:streetSelection', state.selectedStreetIds);
+    }
+
+    function isStreetSelected(streetId) {
+      return state.selectedStreetIds.has(streetId);
+    }
+
+    /**
+     * Select all streets in `visibleIds` (the currently-filtered/visible
+     * set, computed by the UI), or clear the selection if every one of
+     * those is already selected — the standard "select all" checkbox
+     * toggle. Unlike toggleSelectAllBoxes, this is scoped to a caller-
+     * provided id list rather than ALL streets, since the street list is
+     * filterable by box and "select all" should mean "all visible",
+     * matching the checkboxes actually on screen.
+     */
+    function toggleSelectAllStreets(visibleIds) {
+      const allSelected = visibleIds.length > 0 && visibleIds.every(function (id) { return state.selectedStreetIds.has(id); });
+      if (allSelected) {
+        visibleIds.forEach(function (id) { state.selectedStreetIds.delete(id); });
+      } else {
+        visibleIds.forEach(function (id) { state.selectedStreetIds.add(id); });
+      }
+      emit('ui:streetSelection', state.selectedStreetIds);
+    }
+
+    function clearStreetSelection() {
+      if (state.selectedStreetIds.size === 0) return;
+      state.selectedStreetIds = new Set();
+      emit('ui:streetSelection', state.selectedStreetIds);
+    }
+
+    /** '' (all boxes) | '__unassigned__' | a boxNumber string. */
+    function setStreetFilterBoxNumber(value) {
+      state.streetFilterBoxNumber = value || '';
+      emit('ui:streetFilter', state.streetFilterBoxNumber);
     }
 
     function setDrawingActive(active) {
@@ -738,7 +847,7 @@
       // boxes
       setBoxes: setBoxes, addBox: addBox, updateBox: updateBox, removeBox: removeBox, removeBoxesCascade: removeBoxesCascade,
       // streets
-      setStreets: setStreets, addStreet: addStreet, updateStreet: updateStreet, removeStreet: removeStreet,
+      setStreets: setStreets, addStreet: addStreet, updateStreet: updateStreet, removeStreet: removeStreet, removeStreetsCascade: removeStreetsCascade,
       // stats
       setStats: setStats, getBoxStats: getBoxStats,
       recordStreetAttempt: recordStreetAttempt,
@@ -757,6 +866,11 @@
       isBoxSelected: isBoxSelected,
       toggleSelectAllBoxes: toggleSelectAllBoxes,
       clearBoxSelection: clearBoxSelection,
+      toggleStreetSelection: toggleStreetSelection,
+      isStreetSelected: isStreetSelected,
+      toggleSelectAllStreets: toggleSelectAllStreets,
+      clearStreetSelection: clearStreetSelection,
+      setStreetFilterBoxNumber: setStreetFilterBoxNumber,
       setDrawingActive: setDrawingActive,
       pushDrawingVertex: pushDrawingVertex,
       setLabelsVisible: setLabelsVisible,

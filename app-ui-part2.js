@@ -212,6 +212,21 @@
 
     if (loadingToastId) Toast.dismiss(loadingToastId);
 
+    // Snapshot of streets ALREADY in the database for this box, BEFORE this
+    // import — used only to avoid re-adding a street that was saved by a
+    // PREVIOUS import (e.g. re-running the lookup, or an overlapping box).
+    // Deliberately NOT mutated during the loop below: two different OSM
+    // ways found in THIS SAME Overpass result that happen to share a name
+    // and have midpoints within STREET_DUPLICATE_TOLERANCE_DEG of each
+    // other (e.g. a street OSM splits into multiple disconnected segments —
+    // common for streets interrupted by a different road, a loop, or a
+    // gap) are real, distinct streets and must both be kept. If this were
+    // mutated during the loop, the second such segment would be (incorrectly)
+    // treated as a duplicate of the first — even on a brand-new box with no
+    // prior streets at all, silently dropping real street segments. Exact
+    // within-import duplicates (the same OSM way appearing twice, e.g. from
+    // overlapping MultiPolygon rings) are already prevented upstream via
+    // seenOsmIds.
     const existingNames = Store.state.streets.features
       .filter(function (f) { return f.properties && String(f.properties.boxNumber) === String(boxNumber); })
       .map(function (f) {
@@ -241,7 +256,6 @@
       }
 
       Store.addStreet(sf);
-      existingNames.push({ normName: normName, midpoint: midpoint });
       addedCount++;
     });
 
@@ -646,6 +660,52 @@
             Store.removeStreet(id);
             renderActiveTab();
             Toast.show('Street deleted.', 'success');
+          });
+          break;
+
+        case 'filter-streets-by-box':
+          el.addEventListener('change', function () {
+            Store.setStreetFilterBoxNumber(el.value);
+            renderActiveTab();
+          });
+          break;
+
+        case 'toggle-street-select':
+          el.addEventListener('change', function () {
+            Store.toggleStreetSelection(el.dataset.streetId);
+            renderActiveTab();
+          });
+          break;
+
+        case 'select-all-streets':
+          el.addEventListener('change', function () {
+            // "Select all" is scoped to the currently-filtered/visible
+            // streets, not every street in the app — reuse the same
+            // filter predicate renderBuilderTab uses for what's displayed.
+            const filterValue = Store.state.streetFilterBoxNumber || '';
+            const visibleIds = UI.streetsMatchingFilter(Store.state.streets.features, filterValue)
+              .map(function (f) { return f.id; });
+            Store.toggleSelectAllStreets(visibleIds);
+            renderActiveTab();
+          });
+          break;
+
+        case 'bulk-delete-streets':
+          el.addEventListener('click', function () {
+            const ids = Array.from(Store.state.selectedStreetIds);
+            if (ids.length === 0) return;
+
+            const targets = Store.state.streets.features.filter(function (f) { return ids.indexOf(f.id) !== -1; });
+            const label = targets.length === 1
+              ? '"' + (targets[0].properties.name || 'this street') + '"'
+              : targets.length + ' streets';
+
+            const ok = window.confirm('Delete ' + label + '? This cannot be undone.');
+            if (!ok) return;
+
+            const removedCount = Store.removeStreetsCascade(ids);
+            renderActiveTab();
+            Toast.show(removedCount + ' street' + (removedCount === 1 ? '' : 's') + ' deleted.', 'success');
           });
           break;
 
