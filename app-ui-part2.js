@@ -133,6 +133,19 @@
 
   const STREET_DUPLICATE_TOLERANCE_DEG = 0.0003; // ~30m — midpoints within this distance + same normalized name are treated as the same street
 
+  // Delay between successive Overpass requests in a batch import. Overpass
+  // is a free, shared, public service — a tight loop of N back-to-back
+  // requests (one per box) is the kind of burst pattern that public-API
+  // rate-limiting/abuse-detection targets, and a soft block (HTTP 200 with
+  // empty results, no error) can look identical to "this area has no
+  // streets." A small pacing delay between boxes is a courtesy to the
+  // shared service and reduces the chance of triggering that.
+  const OVERPASS_BATCH_DELAY_MS = 1000;
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
   /**
    * Extract one or more rings, each as an array of [lat,lng] pairs (the
    * format fetchStreetsForPolygon/Overpass expects), from a Polygon or
@@ -169,7 +182,9 @@
    *     imports, which show one summary toast instead).
    *   skipRender: don't call renderActiveTab() (used by batch imports,
    *     which render once after the whole batch completes).
-   * @returns {Promise<{ addedStreets: number, skippedDupeStreets: number, streetError: string|null }>}
+   * @returns {Promise<{ addedStreets: number, skippedDupeStreets: number, streetError: string|null, rawElementCount: number, rawWayCount: number }>}
+   *   rawElementCount/rawWayCount: aggregated across all rings, before
+   *   merge/dedup — see fetchStreetsForPolygon for what these distinguish.
    */
   async function persistBoxWithStreetLookup(feature, options) {
     options = options || {};
@@ -192,6 +207,8 @@
     let combinedFeatures = [];
     let firstError = null;
     const seenOsmIds = new Set();
+    let totalRawElementCount = 0;
+    let totalRawWayCount = 0;
 
     for (let i = 0; i < rings.length; i++) {
       let result;
@@ -199,9 +216,11 @@
         result = await window.BoxRecall.Map.fetchStreetsForPolygon(rings[i], boxNumber);
       } catch (err) {
         console.error('[BoxRecall] Unexpected error during street lookup:', err);
-        result = { features: [], rawWayCount: 0, error: 'Street lookup failed unexpectedly.' };
+        result = { features: [], rawWayCount: 0, rawElementCount: 0, error: 'Street lookup failed unexpectedly.' };
       }
       if (result.error && !firstError) firstError = result.error;
+      totalRawElementCount += result.rawElementCount || 0;
+      totalRawWayCount += result.rawWayCount || 0;
       result.features.forEach(function (sf) {
         const key = (sf.properties.osmIds || []).join(',');
         if (key && seenOsmIds.has(key)) return;
@@ -264,8 +283,27 @@
     if (!options.silent) {
       if (firstError && addedCount === 0) {
         Toast.show('Box ' + boxNumber + ': ' + firstError, 'warn', { duration: 7000 });
+      } else if (addedCount === 0 && totalRawElementCount === 0) {
+        // Overpass returned HTTP 200 with zero elements, no error, no
+        // remark — looks like "this area has no roads", but for any
+        // populated area that's suspicious. Could be a genuinely empty
+        // area, a misplaced/degenerate polygon, OR Overpass silently
+        // declining the request (soft rate-limit / abuse detection
+        // returning empty results rather than a 429 or remark) — which
+        // HTTP-status and remark checks above don't catch. Phrasing this
+        // distinctly from "no named streets found" so it's not confused
+        // with the (more common, more benign) "found data, none matched
+        // our filters" case below.
+        Toast.show('Box ' + boxNumber + ': OpenStreetMap returned 0 results for this area (no error reported). If this seems wrong for the area, it may be a temporary lookup issue — try again in a bit, or add streets manually below.', 'warn', { duration: 9000 });
+      } else if (addedCount === 0 && totalRawWayCount === 0) {
+        // Overpass returned data, but none of it was a named way of a
+        // street-like highway type — plausible for a very small box or one
+        // covering mostly non-residential land.
+        Toast.show('Box ' + boxNumber + ': OpenStreetMap found data for this area, but no named streets matching our road types. Add streets manually below.', 'warn', { duration: 7000 });
       } else if (addedCount === 0) {
-        Toast.show('Box ' + boxNumber + ': no named streets found in OpenStreetMap for this area. Add streets manually below.', 'warn', { duration: 7000 });
+        // Overpass found candidate ways (rawWayCount > 0), but all were
+        // deduped against streets already saved for this box.
+        Toast.show('Box ' + boxNumber + ': OpenStreetMap found ' + totalRawWayCount + ' street' + (totalRawWayCount === 1 ? '' : 's') + ' for this area, but all ' + (totalRawWayCount === 1 ? 'was' : 'were') + ' already present.', 'info', { duration: 7000 });
       } else if (firstError) {
         // Partial success: some streets were added, but the lookup didn't
         // finish (e.g. Overpass timed out on a large/complex polygon).
@@ -280,7 +318,7 @@
       }
     }
 
-    return { addedStreets: addedCount, skippedDupeStreets: skippedDupeCount, streetError: firstError };
+    return { addedStreets: addedCount, skippedDupeStreets: skippedDupeCount, streetError: firstError, rawElementCount: totalRawElementCount, rawWayCount: totalRawWayCount };
   }
 
   /**
@@ -370,6 +408,7 @@
 
     let totalStreetsAdded = 0;
     let boxesWithStreetErrors = 0;
+    let boxesWithZeroOverpassResults = 0;
 
     for (let i = 0; i < toImport.length; i++) {
       const f = toImport[i];
@@ -378,10 +417,22 @@
         const r = await persistBoxWithStreetLookup(f, { silent: true, skipRender: true });
         totalStreetsAdded += r.addedStreets;
         if (r.streetError) boxesWithStreetErrors++;
+        // rawElementCount === 0 with no streetError: Overpass returned HTTP
+        // 200 with zero elements, no error/remark. See
+        // persistBoxWithStreetLookup's non-silent toast for the same
+        // condition — suspicious for a populated area, possible soft
+        // rate-limit. Tracked separately from boxesWithStreetErrors since
+        // it's not an "error" by our existing categorization, but is the
+        // signal that would indicate Overpass started declining requests
+        // partway through a batch.
+        if (!r.streetError && r.rawElementCount === 0) boxesWithZeroOverpassResults++;
       } catch (err) {
         console.error('[BoxRecall] persistBoxWithStreetLookup failed for box ' + f.properties.boxNumber + ':', err);
         boxesWithStreetErrors++;
       }
+
+      // Pace requests to Overpass — skip the delay after the last box.
+      if (i < toImport.length - 1) await sleep(OVERPASS_BATCH_DELAY_MS);
     }
 
     if (progressToastId) Toast.dismiss(progressToastId);
@@ -397,7 +448,13 @@
     msg += '.';
     if (skippedExisting > 0) msg += ' ' + skippedExisting + ' already in your list, skipped.';
     if (boxesWithStreetErrors > 0) msg += ' ' + boxesWithStreetErrors + ' box' + (boxesWithStreetErrors === 1 ? '' : 'es') + ' had street-lookup issues — check their street lists.';
-    Toast.show(msg, boxesWithStreetErrors > 0 ? 'warn' : 'success', { duration: 9000 });
+    if (boxesWithZeroOverpassResults > 0) {
+      msg += ' ' + boxesWithZeroOverpassResults + ' box' + (boxesWithZeroOverpassResults === 1 ? '' : 'es') + ' got 0 results from OpenStreetMap with no error reported';
+      msg += boxesWithZeroOverpassResults === toImport.length
+        ? ' — this may indicate a temporary OpenStreetMap lookup issue affecting the whole batch. Try importing again, or in smaller batches.'
+        : ' — if those areas should have streets, try re-importing just those boxes individually.';
+    }
+    Toast.show(msg, (boxesWithStreetErrors > 0 || boxesWithZeroOverpassResults > 0) ? 'warn' : 'success', { duration: 11000 });
 
     function restoreButton() {
       buttonEl.disabled = false;

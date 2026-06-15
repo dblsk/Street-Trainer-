@@ -729,6 +729,169 @@
   }
 
   // ---------------------------------------------------------------------
+  // TEST: Overpass zero-result signals (mocked — sandboxed)
+  // ---------------------------------------------------------------------
+  /**
+   * persistBoxWithStreetLookup distinguishes three "0 streets added, no
+   * HTTP/timeout error" cases via rawElementCount/rawWayCount, each with a
+   * different toast:
+   *   1. rawElementCount === 0 — Overpass returned HTTP 200 with ZERO
+   *      elements and no error/remark. For a populated area this is
+   *      suspicious: could be a genuinely empty area, but could also be
+   *      Overpass silently declining the request (soft rate-limit / abuse
+   *      detection returning empty results rather than a 429). Framed as
+   *      "0 results, no error reported... may be a temporary lookup
+   *      issue" so it's distinguishable from "this area has no streets."
+   *   2. rawElementCount > 0, rawWayCount === 0 — Overpass returned data,
+   *      but none of it matched our street-type/name filters (e.g. only
+   *      footways). More benign — "found data, but no named streets
+   *      matching our road types."
+   *   3. rawWayCount > 0, addedStreets === 0 — candidates were found, but
+   *      all were deduped against streets already saved for this box.
+   *      "found N streets... but all were already present."
+   *
+   * Each case is mocked directly via window.fetch and checked against
+   * persistBoxWithStreetLookup's return value AND its toast text/type.
+   */
+  function testOverpassZeroResultSignals() {
+    section('Overpass Zero-Result Signals');
+
+    const UI = window.BoxRecall.UI;
+    const Toast = FD.Toast;
+    if (!UI || !UI.persistBoxWithStreetLookup) {
+      fail('persistBoxWithStreetLookup not exported', 'window.BoxRecall.UI.persistBoxWithStreetLookup is missing — skipping');
+      return Promise.resolve();
+    }
+
+    const snapshot = {
+      boxes: FD.deepClone(Store.state.boxes),
+      streets: FD.deepClone(Store.state.streets),
+    };
+    const realFetch = window.fetch;
+    const realToastShow = Toast.show;
+
+    function withCapturedToasts(fn) {
+      const toasts = [];
+      Toast.show = function (msg, type, opts) {
+        toasts.push({ msg: msg, type: type });
+        return realToastShow.call(Toast, msg, type, opts);
+      };
+      return fn().finally(function () { Toast.show = realToastShow; }).then(function (result) {
+        return { result: result, toasts: toasts };
+      });
+    }
+
+    function mockBoxFeature(boxNumber) {
+      return {
+        type: 'Feature', id: FD.genId('box'),
+        properties: { layerType: 'box', boxNumber: boxNumber, label: 'Diag Zero-Result Box', source: 'manual' },
+        geometry: { type: 'Polygon', coordinates: [[[-77.5, 38.5], [-77.49, 38.5], [-77.49, 38.51], [-77.5, 38.51], [-77.5, 38.5]]] },
+      };
+    }
+
+    function cleanupBox(boxNumber) {
+      const box = window.BoxRecall.Map.findBoxByNumber(boxNumber);
+      if (box) Store.removeBox(box.id);
+    }
+
+    return Promise.resolve()
+      // --- Case 1: rawElementCount === 0 (HTTP 200, zero elements) ---
+      .then(function () {
+        window.fetch = function () {
+          return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ elements: [] }); } });
+        };
+        return withCapturedToasts(function () {
+          return UI.persistBoxWithStreetLookup(mockBoxFeature('__DIAG_ZERO_1__'), {});
+        }).then(function (outcome) {
+          assert(outcome.result.rawElementCount === 0, 'case 1: rawElementCount is 0 for an empty Overpass response', outcome.result.rawElementCount);
+          assert(outcome.result.rawWayCount === 0, 'case 1: rawWayCount is 0', outcome.result.rawWayCount);
+          assert(outcome.result.addedStreets === 0, 'case 1: addedStreets is 0', outcome.result.addedStreets);
+          assert(outcome.result.streetError === null, 'case 1: streetError is null (this is NOT an HTTP/timeout error)', outcome.result.streetError);
+
+          const warnToast = outcome.toasts.find(function (t) { return t.type === 'warn'; });
+          assert(!!warnToast && /0 results.*no error reported/i.test(warnToast.msg), 'case 1: shows a "0 results, no error reported" warning toast', warnToast);
+          assert(!!warnToast && /temporary lookup issue/i.test(warnToast.msg), 'case 1: toast suggests this may be a temporary lookup issue (not "this area has no streets")', warnToast);
+
+          cleanupBox('__DIAG_ZERO_1__');
+        });
+      })
+      // --- Case 2: rawElementCount > 0, rawWayCount === 0 (data, but filtered out) ---
+      .then(function () {
+        window.fetch = function () {
+          return Promise.resolve({
+            ok: true,
+            json: function () {
+              return Promise.resolve({
+                elements: [
+                  { type: 'way', id: 8001, tags: { highway: 'footway', name: 'Some Path' }, geometry: [{ lat: 38.5, lon: -77.5 }, { lat: 38.501, lon: -77.5 }] },
+                ],
+              });
+            },
+          });
+        };
+        return withCapturedToasts(function () {
+          return UI.persistBoxWithStreetLookup(mockBoxFeature('__DIAG_ZERO_2__'), {});
+        }).then(function (outcome) {
+          assert(outcome.result.rawElementCount === 1, 'case 2: rawElementCount is 1 (Overpass returned data)', outcome.result.rawElementCount);
+          assert(outcome.result.rawWayCount === 0, 'case 2: rawWayCount is 0 (footway does not match our highway-type filter)', outcome.result.rawWayCount);
+          assert(outcome.result.addedStreets === 0, 'case 2: addedStreets is 0', outcome.result.addedStreets);
+
+          const warnToast = outcome.toasts.find(function (t) { return t.type === 'warn'; });
+          assert(!!warnToast && /found data.*no named streets matching/i.test(warnToast.msg), 'case 2: shows a distinct "found data, but no matching road types" toast', warnToast);
+          assert(!!warnToast && !/no error reported/i.test(warnToast.msg), 'case 2: does NOT use case 1\'s "no error reported" phrasing (these are different situations)', warnToast);
+
+          cleanupBox('__DIAG_ZERO_2__');
+        });
+      })
+      // --- Case 3: rawWayCount > 0, but all deduped against pre-existing streets ---
+      .then(function () {
+        const boxNumber = '__DIAG_ZERO_3__';
+        const existingStreet = {
+          type: 'Feature', id: FD.genId('street'),
+          properties: { layerType: 'street', name: 'Main St', boxNumber: boxNumber, source: 'osm', osmIds: [8101] },
+          geometry: { type: 'LineString', coordinates: [[-77.5, 38.5], [-77.4995, 38.5005]] },
+        };
+        Store.addStreet(existingStreet);
+
+        window.fetch = function () {
+          return Promise.resolve({
+            ok: true,
+            json: function () {
+              return Promise.resolve({
+                elements: [
+                  { type: 'way', id: 8101, tags: { highway: 'residential', name: 'Main St' }, geometry: [{ lat: 38.5, lon: -77.5 }, { lat: 38.5005, lon: -77.4995 }] },
+                ],
+              });
+            },
+          });
+        };
+        return withCapturedToasts(function () {
+          return UI.persistBoxWithStreetLookup(mockBoxFeature(boxNumber), {});
+        }).then(function (outcome) {
+          assert(outcome.result.rawElementCount === 1, 'case 3: rawElementCount is 1', outcome.result.rawElementCount);
+          assert(outcome.result.rawWayCount === 1, 'case 3: rawWayCount is 1 (a candidate WAS found)', outcome.result.rawWayCount);
+          assert(outcome.result.addedStreets === 0, 'case 3: addedStreets is 0 (it was a duplicate)', outcome.result.addedStreets);
+          assert(outcome.result.skippedDupeStreets === 1, 'case 3: skippedDupeStreets is 1', outcome.result.skippedDupeStreets);
+
+          const infoToast = outcome.toasts.find(function (t) { return t.type === 'info' && /already present/i.test(t.msg); });
+          assert(!!infoToast && /found 1 street.*all was already present/i.test(infoToast.msg), 'case 3: shows an "found N streets, but all were already present" info toast', infoToast);
+
+          cleanupBox(boxNumber);
+          Store.removeStreet(existingStreet.id);
+        });
+      })
+      .catch(function (err) {
+        fail('testOverpassZeroResultSignals threw', err.message);
+      })
+      .finally(function () {
+        window.fetch = realFetch;
+        Toast.show = realToastShow;
+        Store.setBoxes(snapshot.boxes);
+        Store.setStreets(snapshot.streets);
+      });
+  }
+
+  // ---------------------------------------------------------------------
   // TEST: Quiz state machine (mocked — sandboxed, restores real quiz state)
   // ---------------------------------------------------------------------
   function testQuizStateMachine() {
@@ -1115,6 +1278,7 @@
     try { await testOverpassStreetDiscovery(); } catch (e) { fail('testOverpassStreetDiscovery crashed', e.message); }
     try { await testFairfaxImport(); } catch (e) { fail('testFairfaxImport crashed', e.message); }
     try { await testSplitStreetDedup(); } catch (e) { fail('testSplitStreetDedup crashed', e.message); }
+    try { await testOverpassZeroResultSignals(); } catch (e) { fail('testOverpassZeroResultSignals crashed', e.message); }
     try { testQuizStateMachine(); } catch (e) { fail('testQuizStateMachine crashed', e.message); }
     try { testShuffleAndDuplicateAvoidance(); } catch (e) { fail('testShuffleAndDuplicateAvoidance crashed', e.message); }
     try { testImportExportRoundTrip(); } catch (e) { fail('testImportExportRoundTrip crashed', e.message); }

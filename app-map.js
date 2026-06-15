@@ -792,7 +792,7 @@
    */
   async function fetchStreetsForPolygon(verts, boxNumber) {
     if (!verts || verts.length < 3) {
-      return { features: [], rawWayCount: 0, error: 'Polygon has too few points.' };
+      return { features: [], rawWayCount: 0, rawElementCount: 0, error: 'Polygon has too few points.' };
     }
 
     const query = buildOverpassQuery(verts);
@@ -812,7 +812,7 @@
         ? 'Street lookup timed out. You can add streets manually below.'
         : 'Street lookup failed (network error). You can add streets manually below.';
       console.error('[BoxRecall] Overpass fetch failed:', err);
-      return { features: [], rawWayCount: 0, error: msg };
+      return { features: [], rawWayCount: 0, rawElementCount: 0, error: msg };
     }
     if (timeoutId) clearTimeout(timeoutId);
 
@@ -821,7 +821,7 @@
       const statusMsg = response.status === 429
         ? 'Street lookup is rate-limited right now (too many requests). Try again in a minute, or add streets manually below.'
         : 'Street lookup failed (server returned ' + response.status + '). You can add streets manually below.';
-      return { features: [], rawWayCount: 0, error: statusMsg };
+      return { features: [], rawWayCount: 0, rawElementCount: 0, error: statusMsg };
     }
 
     let data;
@@ -829,7 +829,7 @@
       data = await response.json();
     } catch (err) {
       console.error('[BoxRecall] Overpass response was not valid JSON:', err);
-      return { features: [], rawWayCount: 0, error: 'Street lookup returned an unreadable response. You can add streets manually below.' };
+      return { features: [], rawWayCount: 0, rawElementCount: 0, error: 'Street lookup returned an unreadable response. You can add streets manually below.' };
     }
 
     // Overpass can return HTTP 200 with a PARTIAL result set if the
@@ -874,7 +874,26 @@
       ? 'Street lookup timed out partway through for this area. There may be more streets than were found — you can add missing ones manually below, or try again later when Overpass is less busy.'
       : null;
 
-    return { features: features, rawWayCount: ways.length, error: partialResultsError };
+    // rawElementCount: the TOTAL element count from Overpass, before ANY
+    // filtering (highway type, name, geometry shape). rawWayCount: how many
+    // of those passed the highway/name/geometry filter (i.e. became
+    // candidate streets, before merge/dedup).
+    //
+    // These are deliberately both returned so callers can distinguish:
+    //   - rawElementCount === 0: Overpass itself returned nothing for this
+    //     polygon. For any populated area this is suspicious — could mean
+    //     the area genuinely has no OSM data (rare), the polygon is
+    //     degenerate/misplaced, OR Overpass silently declined the request
+    //     (soft rate-limit / abuse detection returning 200 + empty results
+    //     rather than an HTTP error or `remark`). HTTP-level failures
+    //     (network error, non-200, remark-detected timeout) are already
+    //     surfaced via `error` — this case is the "200 OK, looks successful,
+    //     but suspiciously empty" gap those don't cover.
+    //   - rawElementCount > 0 && rawWayCount === 0: Overpass returned data,
+    //     but none of it was a named way of a street-like highway type
+    //     (e.g. a tiny box containing only footpaths/buildings/parking —
+    //     plausible for a very small or non-residential area).
+    return { features: features, rawWayCount: ways.length, rawElementCount: elements.length, error: partialResultsError };
   }
 
   /**
