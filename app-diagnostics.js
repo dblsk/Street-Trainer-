@@ -895,6 +895,14 @@
    * CLASS pattern (hidden on mobile, shown via a breakpoint override on
    * desktop) — those continue to depend on Tailwind as before, since the
    * hidden ATTRIBUTE and hidden CLASS are independent and don't collide.
+   *
+   * SECOND FIX (this revision): several of these elements also carry a
+   * `flex` class for their shown layout. [hidden] and .flex have EQUAL
+   * specificity, so .flex (defined later, by Tailwind) was winning even
+   * when hidden=true — these elements stayed visible. Fixed via
+   * tag-qualified div[hidden]/input[hidden] selectors (specificity 0,1,1),
+   * which beat a single class unconditionally. See the synthetic-probe
+   * test below, which reproduces this exact conflict.
    */
   function testHiddenClassEnforcement() {
     section('Hidden Attribute Enforcement');
@@ -941,6 +949,45 @@
       assert(sidebar.hidden === false, '#sidebar does not have the hidden attribute set (visibility is purely class/breakpoint-driven)', sidebar.hidden);
     } else {
       fail('#sidebar exists in the DOM', 'not found');
+    }
+
+    // --- [hidden] vs .flex specificity ---
+    // The browser's built-in [hidden]{display:none} and a single-class
+    // .flex{display:flex} have EQUAL specificity (0,1,0) — whichever rule
+    // is later in the stylesheet wins, and Tailwind's generated utilities
+    // load AFTER the UA stylesheet, so .flex was winning even when hidden
+    // was set. This regressed several real elements (settings-modal,
+    // quiz-overlay, map-error-banner, diagnostics-modal, active-box-pill —
+    // all of which carry `flex` in their shown-state class list) staying
+    // visible despite hidden=true. The fix is tag-qualified [hidden]
+    // selectors (div[hidden], input[hidden]), specificity (0,1,1), which
+    // beat a single class unconditionally without !important. This test
+    // reproduces the conflict directly: define .flex ourselves (simulating
+    // Tailwind, AFTER any of our own rules — worst case for our side) and
+    // confirm a hidden div with class="flex" still computes to display:none.
+    const flexProbeStyle = document.createElement('style');
+    flexProbeStyle.textContent = '.__diag_flex_probe__ { display: flex; }';
+    document.head.appendChild(flexProbeStyle);
+
+    const flexProbe = document.createElement('div');
+    flexProbe.id = '__diag_hidden_flex_probe__';
+    flexProbe.className = '__diag_flex_probe__';
+    flexProbe.hidden = true;
+    document.body.appendChild(flexProbe);
+
+    try {
+      const hiddenWithFlexDisplay = window.getComputedStyle(flexProbe).display;
+      assert(hiddenWithFlexDisplay === 'none', 'a hidden <div> with an equal-specificity .flex class still computes to display:none (tag-qualified [hidden] wins)', hiddenWithFlexDisplay);
+
+      // And confirm un-hiding still lets .flex apply normally (the fix
+      // shouldn't make [hidden] permanently win regardless of the
+      // attribute's presence).
+      flexProbe.hidden = false;
+      const shownDisplay = window.getComputedStyle(flexProbe).display;
+      assert(shownDisplay === 'flex', 'once hidden=false, the .flex class applies normally (display:flex)', shownDisplay);
+    } finally {
+      flexProbe.remove();
+      flexProbeStyle.remove();
     }
   }
 

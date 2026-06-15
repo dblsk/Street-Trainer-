@@ -183,7 +183,20 @@ if (typeof tailwind !== 'undefined') {
    * bar use in `hidden md:flex` responsive pairs (hidden on mobile, shown
    * via a breakpoint override on desktop) — those continue to depend on
    * Tailwind as before, unaffected by this.
+   *
+   * HOWEVER: several of these elements ALSO carry a `flex` class for their
+   * SHOWN layout (e.g. `class="... flex items-center justify-center ..."`).
+   * The browser's built-in `[hidden]{display:none}` and Tailwind's
+   * `.flex{display:flex}` have EQUAL specificity (0,1,0) — same as any
+   * single class — so whichever rule comes LATER in the stylesheet wins.
+   * Tailwind's generated utilities load after the UA stylesheet, so
+   * `.flex` was winning even when `hidden` was set, leaving these elements
+   * visible. Tag-qualified [hidden] selectors below have specificity
+   * (0,1,1), which beats a single class unconditionally — no !important,
+   * and #sidebar's `hidden md:flex` CLASS pattern is untouched since it
+   * doesn't use the hidden ATTRIBUTE at all.
    */
+  div[hidden], input[hidden] { display: none; }
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: rgb(var(--c-base-900)); }
