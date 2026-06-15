@@ -1,231 +1,16 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
-// app-ui-part2.js — Study tab, Quiz tab, Quiz overlay, dynamic action dispatch
+// BOX RECALL — Box Study & Active Recall App
+// app-ui-part2.js — Quiz overlay (map bottom bar), dynamic action dispatch
 // ============================================================================
 
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
   const Toast = FD.Toast;
   const esc = FD.escapeHtml;
-  const UI = window.FirstDue.UI;
-
-  // ---------------------------------------------------------------------
-  // STUDY TAB (Module 2: Box-by-Box Study Mode)
-  // ---------------------------------------------------------------------
-
-  function renderStudyTab() {
-    const boxes = Store.state.boxes.features || [];
-    const activeBoxNumber = Store.state.activeBoxNumber;
-
-    let body = '';
-    body += UI.sectionHeader('Filter Mode', 'filter');
-
-    if (boxes.length === 0) {
-      body += UI.emptyState('Define at least one Response Box in Box Builder to start a focused study session.', 'map-pin');
-      return UI.wrapTabPanel(body);
-    }
-
-    body += '<label class="block mb-3">' +
-      '<span class="text-[11px] text-ink-500 font-mono">Select Response Box</span>' +
-      '<select id="study-box-select" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2.5 py-2 font-mono text-sm focus:border-alert-cyan/60">' +
-      '<option value="">— Choose a box —</option>' +
-      UI.boxOptionsHtml(boxes, activeBoxNumber, false) +
-      '</select>' +
-      '</label>';
-
-    body += '<div class="flex items-center justify-between bg-base-800 border border-base-700 rounded-md p-2.5 mb-4">' +
-      '<div class="flex items-center gap-2">' +
-      '<i data-lucide="tag" class="w-4 h-4 text-alert-cyan"></i>' +
-      '<span class="text-xs text-ink-100">Street Label Overlay</span>' +
-      '</div>' +
-      '<button data-action="toggle-labels" role="switch" aria-checked="' + (Store.state.labelsVisible ? 'true' : 'false') + '" ' +
-      'class="w-11 h-6 rounded-full transition-colors relative ' + (Store.state.labelsVisible ? 'bg-alert-cyan/40' : 'bg-base-600') + '">' +
-      '<span class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-ink-100 transition-transform ' + (Store.state.labelsVisible ? 'translate-x-5' : '') + '"></span>' +
-      '</button>' +
-      '</div>';
-
-    if (activeBoxNumber) {
-      const mastery = window.FirstDue.Map._internal.masteryForBox(activeBoxNumber);
-      const stats = Store.getBoxStats(activeBoxNumber);
-      const streets = window.FirstDue.Quiz.streetsForBox(activeBoxNumber);
-
-      body += UI.sectionHeader('Box ' + activeBoxNumber + ' Overview', 'crosshair');
-      body += '<div class="bg-base-800 border border-base-700 rounded-md p-3 mb-4">' +
-        '<div class="flex items-center justify-between mb-2">' +
-        '<span class="font-mono font-700 text-lg">Box ' + esc(activeBoxNumber) + '</span>' +
-        UI.masteryBadge(mastery.level, mastery.ratio) +
-        '</div>' +
-        '<div class="text-[11px] text-ink-500 font-mono mb-3">' +
-        streets.length + ' street' + (streets.length === 1 ? '' : 's') + ' in this box' +
-        '</div>' +
-        '<div class="grid grid-cols-3 gap-1.5">' +
-        '<button data-action="go-quiz-mode" data-box="' + esc(activeBoxNumber) + '" data-mode="name-street" class="text-[10px] font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors flex flex-col items-center gap-1"><i data-lucide="type" class="w-3.5 h-3.5"></i>Name It</button>' +
-        '<button data-action="go-quiz-mode" data-box="' + esc(activeBoxNumber) + '" data-mode="locate-street" class="text-[10px] font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-green/40 hover:bg-alert-green/10 text-alert-green transition-colors flex flex-col items-center gap-1"><i data-lucide="map-pin" class="w-3.5 h-3.5"></i>Locate It</button>' +
-        '<button data-action="go-quiz-mode" data-box="' + esc(activeBoxNumber) + '" data-mode="box-identifier" class="text-[10px] font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-amber/40 hover:bg-alert-amber/10 text-alert-amber transition-colors flex flex-col items-center gap-1"><i data-lucide="locate" class="w-3.5 h-3.5"></i>ID Box</button>' +
-        '</div>' +
-        '</div>';
-
-      // Per-street stats
-      if (streets.length > 0) {
-        body += UI.sectionHeader('Street Roster', 'list-checks');
-        body += '<div class="space-y-1.5">';
-        streets
-          .slice()
-          .sort(function (a, b) { return (a.properties.name || '').localeCompare(b.properties.name || ''); })
-          .forEach(function (f) {
-            const ss = stats.streetStats[f.id];
-            const ratio = ss && ss.seen > 0 ? ss.correct / ss.seen : null;
-            let lvl = 'unstudied';
-            if (ratio !== null) {
-              const T = FD.MASTERY_THRESHOLDS;
-              lvl = ratio >= T.MASTERED ? 'mastered' : (ratio >= T.REVIEW ? 'review' : 'failing');
-            }
-            body += '<div class="bg-base-800 border border-base-700 rounded-md px-2.5 py-1.5 flex items-center justify-between gap-2">' +
-              '<span class="font-mono text-xs truncate">' + esc(f.properties.name || 'Unnamed') + '</span>' +
-              UI.masteryBadge(lvl, ratio) +
-              '</div>';
-          });
-        body += '</div>';
-      }
-    } else {
-      body += UI.emptyState('Select a box above (or tap one on the map / dashboard) to pan, zoom, and dim the map to that territory.', 'crosshair');
-    }
-
-    return UI.wrapTabPanel(body);
-  }
-
-  // ---------------------------------------------------------------------
-  // QUIZ TAB (Module 3 entry point)
-  // ---------------------------------------------------------------------
-
-  const QUIZ_MODE_META = {
-    'name-street': { label: 'Name the Street', icon: 'type', color: 'cyan', desc: 'A street segment is highlighted on the map. Type its name.' },
-    'locate-street': { label: 'Locate the Street', icon: 'map-pin', color: 'green', desc: 'You\'ll be told a street name. Tap it on the map.' },
-    'box-identifier': { label: 'Box Identifier', icon: 'locate', color: 'amber', desc: 'A pin drops somewhere on the map. Identify which Response Box it\'s in.' },
-  };
-
-  function renderQuizTab() {
-    const quiz = Store.state.quiz;
-
-    if (quiz.phase === 'IDLE') {
-      return UI.wrapTabPanel(renderQuizSetup());
-    }
-    if (quiz.phase === 'RESULTS_SCORE') {
-      return UI.wrapTabPanel(renderQuizResults());
-    }
-    return UI.wrapTabPanel(renderQuizActiveSidebar());
-  }
-
-  function renderQuizSetup() {
-    const boxes = Store.state.boxes.features || [];
-    let body = '';
-    body += UI.sectionHeader('Start a Quiz', 'brain-circuit');
-
-    if (boxes.length === 0) {
-      body += UI.emptyState('Define at least one Response Box with streets before starting a quiz.', 'brain-circuit');
-      return body;
-    }
-
-    body += '<label class="block mb-3">' +
-      '<span class="text-[11px] text-ink-500 font-mono">Response Box</span>' +
-      '<select id="quiz-box-select" class="mt-1 w-full bg-base-800 border border-base-600 rounded px-2.5 py-2 font-mono text-sm focus:border-alert-cyan/60">' +
-      '<option value="">— Choose a box —</option>' +
-      UI.boxOptionsHtml(boxes, Store.state.activeBoxNumber, false) +
-      '</select>' +
-      '<span class="text-[10px] text-ink-500 font-mono mt-1 block">Not required for Box Identifier mode.</span>' +
-      '</label>';
-
-    body += '<div class="space-y-2">';
-    Object.keys(QUIZ_MODE_META).forEach(function (mode) {
-      const m = QUIZ_MODE_META[mode];
-      const colorCls = {
-        cyan: 'border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan',
-        green: 'border-alert-green/40 hover:bg-alert-green/10 text-alert-green',
-        amber: 'border-alert-amber/40 hover:bg-alert-amber/10 text-alert-amber',
-      }[m.color];
-      body += '<button data-action="start-quiz" data-mode="' + mode + '" class="w-full text-left p-3 rounded-md border ' + colorCls + ' transition-colors flex items-start gap-3">' +
-        '<i data-lucide="' + m.icon + '" class="w-5 h-5 shrink-0 mt-0.5"></i>' +
-        '<div>' +
-        '<div class="font-display font-700 text-sm uppercase tracking-wide">' + esc(m.label) + '</div>' +
-        '<div class="text-[11px] text-ink-300 mt-0.5 leading-relaxed">' + esc(m.desc) + '</div>' +
-        '</div>' +
-        '</button>';
-    });
-    body += '</div>';
-
-    return body;
-  }
-
-  function renderQuizActiveSidebar() {
-    const quiz = Store.state.quiz;
-    const meta = QUIZ_MODE_META[quiz.mode] || { label: quiz.mode, icon: 'brain-circuit' };
-
-    let body = '';
-    body += '<div class="flex items-center justify-between mb-3">' +
-      '<div class="flex items-center gap-2">' +
-      '<i data-lucide="' + meta.icon + '" class="w-4 h-4 text-alert-cyan"></i>' +
-      '<span class="font-display font-700 text-sm uppercase tracking-wide">' + esc(meta.label) + '</span>' +
-      '</div>' +
-      '<button data-action="end-quiz" class="text-[10px] font-display font-600 uppercase tracking-wide px-2 py-1 rounded border border-base-600 hover:border-alert-red/50 text-ink-500 hover:text-alert-red transition-colors">End Quiz</button>' +
-      '</div>';
-
-    if (quiz.boxNumber) {
-      body += '<div class="text-[11px] text-ink-500 font-mono mb-3">Box ' + esc(quiz.boxNumber) + '</div>';
-    }
-
-    const progress = quiz.totalQuestions > 0 ? (quiz.questionIndex / quiz.totalQuestions) : 0;
-    const progressShown = quiz.phase === 'ANSWER_SUBMITTED' ? (quiz.questionIndex + 1) / quiz.totalQuestions : progress;
-    body += '<div class="mb-4">' +
-      '<div class="flex justify-between text-[10px] font-mono text-ink-500 mb-1">' +
-      '<span>Question ' + Math.min(quiz.questionIndex + 1, quiz.totalQuestions) + ' / ' + quiz.totalQuestions + '</span>' +
-      '<span>' + Math.round(progressShown * 100) + '%</span>' +
-      '</div>' +
-      '<div class="h-1.5 bg-base-700 rounded-full overflow-hidden">' +
-      '<div class="h-full bg-alert-cyan transition-all duration-300" style="width:' + Math.round(progressShown * 100) + '%"></div>' +
-      '</div>' +
-      '</div>';
-
-    body += '<p class="text-[11px] text-ink-500 leading-relaxed bg-base-800 border border-base-700 rounded-md p-2.5">The active question and answer controls appear at the bottom of the map. On mobile, swipe the panel down to see the full map.</p>';
-
-    return body;
-  }
-
-  function renderQuizResults() {
-    const summary = window.FirstDue.Quiz.getSessionSummary();
-    const meta = QUIZ_MODE_META[summary.mode] || { label: summary.mode };
-
-    let scoreColor = 'text-alert-red';
-    if (summary.pct >= 80) scoreColor = 'text-alert-green';
-    else if (summary.pct >= 50) scoreColor = 'text-alert-amber';
-
-    let body = '';
-    body += '<div class="text-center py-4">' +
-      '<div class="text-[11px] font-mono uppercase tracking-wider text-ink-500 mb-1">' + esc(meta.label) + (summary.boxNumber ? ' · Box ' + esc(summary.boxNumber) : '') + '</div>' +
-      '<div class="font-display font-700 text-5xl ' + scoreColor + '">' + summary.pct + '%</div>' +
-      '<div class="text-sm text-ink-300 mt-1 font-mono">' + summary.correct + ' / ' + summary.total + ' correct</div>' +
-      '</div>';
-
-    if (summary.hardestName) {
-      body += '<div class="bg-base-800 border border-alert-amber/30 rounded-md p-2.5 mb-4 flex items-center gap-2">' +
-        '<i data-lucide="alert-triangle" class="w-4 h-4 text-alert-amber shrink-0"></i>' +
-        '<span class="text-xs text-ink-100">Toughest this round: <span class="font-mono font-700">' + esc(summary.hardestName) + '</span></span>' +
-        '</div>';
-    }
-
-    body += '<div class="grid grid-cols-2 gap-2">' +
-      '<button data-action="retry-quiz" data-mode="' + esc(summary.mode) + '" data-box="' + esc(summary.boxNumber || '') + '" class="text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors flex items-center justify-center gap-1.5"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>Retry</button>' +
-      '<button data-action="quiz-new-session" class="text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-base-600 hover:border-base-500 text-ink-300 transition-colors flex items-center justify-center gap-1.5"><i data-lucide="list" class="w-3.5 h-3.5"></i>New Session</button>' +
-      '</div>';
-
-    if (summary.boxNumber) {
-      body += '<button data-action="focus-box" data-box="' + esc(summary.boxNumber) + '" class="w-full mt-2 text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-base-600 hover:border-base-500 text-ink-300 transition-colors flex items-center justify-center gap-1.5"><i data-lucide="map" class="w-3.5 h-3.5"></i>Back to Box on Map</button>';
-    }
-
-    return body;
-  }
+  const UI = window.BoxRecall.UI;
 
   // ---------------------------------------------------------------------
   // QUIZ MAP OVERLAY (bottom bar over the map — question + answer input)
@@ -237,12 +22,12 @@
     const quiz = Store.state.quiz;
 
     if (quiz.phase === 'IDLE' || quiz.phase === 'RESULTS_SCORE') {
-      overlay.classList.add('hidden');
+      overlay.hidden = true;
       overlay.innerHTML = '';
       return;
     }
 
-    overlay.classList.remove('hidden');
+    overlay.hidden = false;
 
     const target = quiz.currentTarget;
     let questionHtml = '';
@@ -311,7 +96,7 @@
         input.onkeydown = function (e) {
           if (e.key === 'Enter') {
             e.preventDefault();
-            window.FirstDue.Quiz.submitNameStreetAnswer(input.value);
+            window.BoxRecall.Quiz.submitNameStreetAnswer(input.value);
           }
         };
       }
@@ -411,9 +196,9 @@
     for (let i = 0; i < rings.length; i++) {
       let result;
       try {
-        result = await window.FirstDue.Map.fetchStreetsForPolygon(rings[i], boxNumber);
+        result = await window.BoxRecall.Map.fetchStreetsForPolygon(rings[i], boxNumber);
       } catch (err) {
-        console.error('[FirstDue] Unexpected error during street lookup:', err);
+        console.error('[BoxRecall] Unexpected error during street lookup:', err);
         result = { features: [], rawWayCount: 0, error: 'Street lookup failed unexpectedly.' };
       }
       if (result.error && !firstError) firstError = result.error;
@@ -463,10 +248,16 @@
     if (!options.skipRender) renderActiveTab();
 
     if (!options.silent) {
-      if (firstError) {
+      if (firstError && addedCount === 0) {
         Toast.show('Box ' + boxNumber + ': ' + firstError, 'warn', { duration: 7000 });
       } else if (addedCount === 0) {
         Toast.show('Box ' + boxNumber + ': no named streets found in OpenStreetMap for this area. Add streets manually below.', 'warn', { duration: 7000 });
+      } else if (firstError) {
+        // Partial success: some streets were added, but the lookup didn't
+        // finish (e.g. Overpass timed out on a large/complex polygon).
+        let msg = 'Box ' + boxNumber + ': added ' + addedCount + ' street' + (addedCount === 1 ? '' : 's') + ' from OpenStreetMap, but the ' + firstError.charAt(0).toLowerCase() + firstError.slice(1);
+        if (skippedDupeCount > 0) msg += ' (' + skippedDupeCount + ' already present)';
+        Toast.show(msg, 'warn', { duration: 9000 });
       } else {
         let msg = 'Box ' + boxNumber + ': added ' + addedCount + ' street' + (addedCount === 1 ? '' : 's') + ' from OpenStreetMap.';
         if (skippedDupeCount > 0) msg += ' (' + skippedDupeCount + ' already present)';
@@ -494,7 +285,7 @@
     const stationText = stationInput ? stationInput.value.trim() : '';
     const boxesText = boxesInput ? boxesInput.value.trim() : '';
 
-    const Import = window.FirstDue.Import;
+    const Import = window.BoxRecall.Import;
     const stationNumber = Import.parseStationNumber(stationText);
     const boxList = Import.parseBoxNumberList(boxesText);
 
@@ -523,7 +314,7 @@
     try {
       result = await Import.fetchFairfaxFireBoxes(stationNumber, boxList.numbers);
     } catch (err) {
-      console.error('[FirstDue] Fairfax import failed unexpectedly:', err);
+      console.error('[BoxRecall] Fairfax import failed unexpectedly:', err);
       result = { features: [], rawCount: 0, error: 'Import failed unexpectedly. Try again, or draw the box manually.' };
     }
 
@@ -548,7 +339,7 @@
     const toImport = [];
     let skippedExisting = 0;
     result.features.forEach(function (f) {
-      if (window.FirstDue.Map.findBoxByNumber(f.properties.boxNumber)) {
+      if (window.BoxRecall.Map.findBoxByNumber(f.properties.boxNumber)) {
         skippedExisting++;
       } else {
         toImport.push(f);
@@ -574,7 +365,7 @@
         totalStreetsAdded += r.addedStreets;
         if (r.streetError) boxesWithStreetErrors++;
       } catch (err) {
-        console.error('[FirstDue] persistBoxWithStreetLookup failed for box ' + f.properties.boxNumber + ':', err);
+        console.error('[BoxRecall] persistBoxWithStreetLookup failed for box ' + f.properties.boxNumber + ':', err);
         boxesWithStreetErrors++;
       }
     }
@@ -614,8 +405,8 @@
    * @param {string} label
    */
   async function saveNewBoxWithStreetLookup(verts, boxNumber, label) {
-    const feature = window.FirstDue.Map.buildPolygonFeatureFromVertices(verts, { boxNumber: boxNumber, label: label });
-    window.FirstDue.Map.cancelDrawing();
+    const feature = window.BoxRecall.Map.buildPolygonFeatureFromVertices(verts, { boxNumber: boxNumber, label: label });
+    window.BoxRecall.Map.cancelDrawing();
     hideDrawBanner();
     syncTopBarDrawButtons();
     await persistBoxWithStreetLookup(feature, {});
@@ -641,17 +432,26 @@
       switch (action) {
         case 'focus-box':
           el.addEventListener('click', function () {
-            window.FirstDue.Map.focusBox(el.dataset.box);
-            Store.setActiveTab('study');
+            window.BoxRecall.Map.focusBox(el.dataset.box);
+            Store.setActiveBoxNumber(el.dataset.box);
+            Store.setActiveTab('home');
             renderActiveTab();
             collapseSheetIfNeeded();
           });
           break;
 
-        case 'go-quiz':
+        case 'open-box-sheet':
           el.addEventListener('click', function () {
-            window.FirstDue.Map.focusBox(el.dataset.box);
-            Store.setActiveTab('quiz');
+            window.BoxRecall.Map.focusBox(el.dataset.box);
+            Store.setActiveBoxNumber(el.dataset.box);
+            renderActiveTab();
+          });
+          break;
+
+        case 'close-box-sheet':
+          el.addEventListener('click', function () {
+            Store.setActiveBoxNumber(null);
+            window.BoxRecall.Map.clearFocus();
             renderActiveTab();
           });
           break;
@@ -660,8 +460,8 @@
           el.addEventListener('click', function () {
             const mode = el.dataset.mode;
             const box = el.dataset.box;
-            Store.setActiveTab('quiz');
-            window.FirstDue.Quiz.startQuiz(mode, box);
+            Store.setActiveTab('home');
+            window.BoxRecall.Quiz.startQuiz(mode, box);
             renderActiveTab();
           });
           break;
@@ -680,7 +480,7 @@
         case 'toggle-labels':
           el.addEventListener('click', function () {
             const newVal = !Store.state.labelsVisible;
-            window.FirstDue.Map.setLabelsVisible(newVal);
+            window.BoxRecall.Map.setLabelsVisible(newVal);
             renderActiveTab();
             syncTopBarLabelButtons();
           });
@@ -688,7 +488,7 @@
 
         case 'start-draw-box':
           el.addEventListener('click', function () {
-            window.FirstDue.Map.startDrawing();
+            window.BoxRecall.Map.startDrawing();
             renderActiveTab();
             syncTopBarDrawButtons();
             showDrawBanner('box');
@@ -697,7 +497,7 @@
 
         case 'cancel-draw-box':
           el.addEventListener('click', function () {
-            window.FirstDue.Map.cancelDrawing();
+            window.BoxRecall.Map.cancelDrawing();
             renderActiveTab();
             syncTopBarDrawButtons();
             hideDrawBanner();
@@ -706,7 +506,7 @@
 
         case 'finish-draw-box':
           el.addEventListener('click', function () {
-            const verts = window.FirstDue.Map.finishDrawing();
+            const verts = window.BoxRecall.Map.finishDrawing();
             if (!verts) return;
             const numberInput = root.querySelector('#new-box-number');
             const labelInput = root.querySelector('#new-box-label');
@@ -717,14 +517,14 @@
               Toast.show('Enter a Box Number before saving.', 'warn');
               return;
             }
-            const existing = window.FirstDue.Map.findBoxByNumber(boxNumber);
+            const existing = window.BoxRecall.Map.findBoxByNumber(boxNumber);
             if (existing) {
               Toast.show('Box ' + boxNumber + ' already exists. Choose a different number.', 'error');
               return;
             }
 
             saveNewBoxWithStreetLookup(verts, boxNumber, label).catch(function (err) {
-              console.error('[FirstDue] saveNewBoxWithStreetLookup failed:', err);
+              console.error('[BoxRecall] saveNewBoxWithStreetLookup failed:', err);
               Toast.show('Box ' + boxNumber + ' saved, but street lookup failed unexpectedly. Add streets manually below.', 'warn', { duration: 7000 });
             });
           });
@@ -736,29 +536,66 @@
           });
           break;
 
+        case 'toggle-box-select':
+          el.addEventListener('change', function () {
+            Store.toggleBoxSelection(el.dataset.boxId);
+            renderActiveTab();
+          });
+          break;
+
+        case 'select-all-boxes':
+          el.addEventListener('change', function () {
+            Store.toggleSelectAllBoxes();
+            renderActiveTab();
+          });
+          break;
+
+        case 'bulk-delete-boxes':
+          el.addEventListener('click', function () {
+            const ids = Array.from(Store.state.selectedBoxIds);
+            if (ids.length === 0) return;
+
+            const targets = Store.state.boxes.features.filter(function (f) { return ids.indexOf(f.id) !== -1; });
+            const boxLabel = targets.length === 1
+              ? 'Box ' + targets[0].properties.boxNumber
+              : targets.length + ' boxes';
+            const totalStreets = targets.reduce(function (sum, f) {
+              return sum + window.BoxRecall.Quiz.streetsForBox(f.properties.boxNumber).length;
+            }, 0);
+            const streetClause = totalStreets > 0 ? (' and ' + totalStreets + ' street' + (totalStreets === 1 ? '' : 's')) : '';
+
+            const ok = window.confirm('Delete ' + boxLabel + streetClause + '? Quiz history for ' + (targets.length === 1 ? 'this box' : 'these boxes') + ' will also be reset. This cannot be undone.');
+            if (!ok) return;
+
+            // If the active (map-focused) box is among those being deleted, clear focus first.
+            const activeTarget = targets.find(function (f) { return f.properties.boxNumber === Store.state.activeBoxNumber; });
+            if (activeTarget) window.BoxRecall.Map.clearFocus();
+
+            const removedCount = Store.removeBoxesCascade(ids);
+            renderActiveTab();
+            Toast.show(removedCount + ' box' + (removedCount === 1 ? '' : 'es') + ' deleted' + streetClause + '.', 'success');
+          });
+          break;
+
         case 'delete-box':
           el.addEventListener('click', function () {
             const boxId = el.dataset.boxId;
             const boxNumber = el.dataset.box;
-            const ok = window.confirm('Delete Box ' + boxNumber + '? Streets assigned to it will become unassigned. This cannot be undone.');
+            const streetCount = window.BoxRecall.Quiz.streetsForBox(boxNumber).length;
+            const streetClause = streetCount > 0 ? (' and ' + streetCount + ' street' + (streetCount === 1 ? '' : 's')) : '';
+            const ok = window.confirm('Delete Box ' + boxNumber + streetClause + '? Quiz history for this box will also be reset. This cannot be undone.');
             if (!ok) return;
             Store.removeBox(boxId);
-            Store.state.streets.features.forEach(function (f) {
-              if (f.properties && String(f.properties.boxNumber) === String(boxNumber)) {
-                Store.updateStreet(f.id, function (ff) { ff.properties.boxNumber = null; return ff; });
-              }
-            });
-            Store.resetBoxStats(boxNumber);
-            if (Store.state.activeBoxNumber === boxNumber) window.FirstDue.Map.clearFocus();
+            if (Store.state.activeBoxNumber === boxNumber) window.BoxRecall.Map.clearFocus();
             renderActiveTab();
-            Toast.show('Box ' + boxNumber + ' deleted.', 'success');
+            Toast.show('Box ' + boxNumber + ' deleted' + streetClause + '.', 'success');
           });
           break;
 
         case 'start-draw-street':
           el.addEventListener('click', function () {
-            window.FirstDue.Map.startStreetDrawing();
-            window.FirstDue._streetDrawActive = true;
+            window.BoxRecall.Map.startStreetDrawing();
+            window.BoxRecall._streetDrawActive = true;
             renderActiveTab();
             syncTopBarDrawButtons();
             showDrawBanner('street');
@@ -767,8 +604,8 @@
 
         case 'cancel-draw-street':
           el.addEventListener('click', function () {
-            window.FirstDue.Map.cancelStreetDrawing();
-            window.FirstDue._streetDrawActive = false;
+            window.BoxRecall.Map.cancelStreetDrawing();
+            window.BoxRecall._streetDrawActive = false;
             renderActiveTab();
             syncTopBarDrawButtons();
             hideDrawBanner();
@@ -787,11 +624,11 @@
               return;
             }
 
-            const feature = window.FirstDue.Map.finishStreetDrawing(name);
+            const feature = window.BoxRecall.Map.finishStreetDrawing(name);
             if (!feature) return;
             feature.properties.boxNumber = boxNumber || null;
             Store.addStreet(feature);
-            window.FirstDue._streetDrawActive = false;
+            window.BoxRecall._streetDrawActive = false;
             hideDrawBanner();
             syncTopBarDrawButtons();
             renderActiveTab();
@@ -815,26 +652,28 @@
         case 'submit-name-street':
           el.addEventListener('click', function () {
             const input = document.getElementById('quiz-answer-input');
-            window.FirstDue.Quiz.submitNameStreetAnswer(input ? input.value : '');
+            window.BoxRecall.Quiz.submitNameStreetAnswer(input ? input.value : '');
           });
           break;
 
         case 'submit-box-identifier':
           el.addEventListener('click', function () {
-            window.FirstDue.Quiz.submitBoxIdentifierAnswer(el.dataset.box);
+            window.BoxRecall.Quiz.submitBoxIdentifierAnswer(el.dataset.box);
           });
           break;
 
         case 'next-question':
           el.addEventListener('click', function () {
-            window.FirstDue.Quiz.nextQuestion();
+            window.BoxRecall.Quiz.nextQuestion();
             renderActiveTab();
           });
           break;
 
         case 'end-quiz':
           el.addEventListener('click', function () {
-            window.FirstDue.Quiz.endQuiz();
+            const box = Store.state.quiz.boxNumber;
+            window.BoxRecall.Quiz.endQuiz();
+            if (box) Store.setActiveBoxNumber(box);
             renderActiveTab();
           });
           break;
@@ -844,7 +683,7 @@
             const mode = el.dataset.mode;
             const select = document.getElementById('quiz-box-select');
             const box = select ? select.value : '';
-            window.FirstDue.Quiz.startQuiz(mode, box || null);
+            window.BoxRecall.Quiz.startQuiz(mode, box || null);
             renderActiveTab();
           });
           break;
@@ -853,14 +692,16 @@
           el.addEventListener('click', function () {
             const mode = el.dataset.mode;
             const box = el.dataset.box || null;
-            window.FirstDue.Quiz.startQuiz(mode, box);
+            window.BoxRecall.Quiz.startQuiz(mode, box);
             renderActiveTab();
           });
           break;
 
         case 'quiz-new-session':
           el.addEventListener('click', function () {
+            const box = Store.state.quiz.boxNumber;
             Store.quizDispatch('RESET');
+            if (box) Store.setActiveBoxNumber(box);
             renderActiveTab();
             renderQuizOverlay();
           });
@@ -891,10 +732,10 @@
       studySelect._fdBound = true;
       studySelect.addEventListener('change', function () {
         if (studySelect.value) {
-          window.FirstDue.Map.focusBox(studySelect.value);
+          window.BoxRecall.Map.focusBox(studySelect.value);
         } else {
           Store.setActiveBoxNumber(null);
-          window.FirstDue.Map.clearFocus();
+          window.BoxRecall.Map.clearFocus();
         }
         renderActiveTab();
       });
@@ -918,7 +759,7 @@
   }
 
   function syncTopBarDrawButtons() {
-    const active = Store.state.drawingActive || !!window.FirstDue._streetDrawActive;
+    const active = Store.state.drawingActive || !!window.BoxRecall._streetDrawActive;
     [document.getElementById('btn-draw-mode'), document.getElementById('btn-draw-mode-m')].forEach(function (btn) {
       if (!btn) return;
       btn.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -936,8 +777,8 @@
    * <i> placeholder and re-running createIcons for just that button.
    */
   function syncBasemapButtons() {
-    const key = window.FirstDue.Map.getBasemap();
-    const meta = window.FirstDue.Map.BASEMAPS[key];
+    const key = window.BoxRecall.Map.getBasemap();
+    const meta = window.BoxRecall.Map.BASEMAPS[key];
     if (!meta) return;
 
     [document.getElementById('btn-basemap'), document.getElementById('btn-basemap-m')].forEach(function (btn) {
@@ -952,6 +793,29 @@
   }
 
   /**
+   * Update the theme-toggle button icon to reflect the CURRENTLY DISPLAYED
+   * theme: a sun icon (offering to switch to dark) when light is active, a
+   * moon icon (offering to switch to light) when dark is active. Same
+   * Lucide re-render pattern as syncBasemapButtons.
+   */
+  function syncThemeButtons() {
+    const effective = Store.getEffectiveTheme();
+    const icon = effective === 'dark' ? 'moon' : 'sun';
+    const label = effective === 'dark' ? 'Dark theme (tap for light)' : 'Light theme (tap for dark)';
+
+    [document.getElementById('btn-theme-toggle'), document.getElementById('btn-theme-toggle-m')].forEach(function (btn) {
+      if (!btn) return;
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      if (btn.dataset.themeIcon === icon) return;
+
+      btn.dataset.themeIcon = icon;
+      btn.innerHTML = '<i data-lucide="' + icon + '" class="w-4 h-4 text-ink-300"></i>';
+      UI.refreshIcons(btn);
+    });
+  }
+
+  /**
    * Render the 3-way basemap segmented control inside the Settings modal
    * (#basemap-selector). Re-renders on every open so the active selection
    * reflects the persisted setting, and on every selection so the active
@@ -961,11 +825,11 @@
     const container = document.getElementById('basemap-selector');
     if (!container) return;
 
-    const order = window.FirstDue.Map.BASEMAP_ORDER;
-    const current = window.FirstDue.Map.getBasemap();
+    const order = window.BoxRecall.Map.BASEMAP_ORDER;
+    const current = window.BoxRecall.Map.getBasemap();
 
     container.innerHTML = order.map(function (key) {
-      const meta = window.FirstDue.Map.BASEMAPS[key];
+      const meta = window.BoxRecall.Map.BASEMAPS[key];
       const active = key === current;
       const activeCls = active
         ? 'border-alert-cyan/50 bg-alert-cyan/10 text-alert-cyan'
@@ -981,7 +845,7 @@
     container.querySelectorAll('[data-action="select-basemap"]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         const key = btn.dataset.basemap;
-        window.FirstDue.Map.setBasemap(key);
+        window.BoxRecall.Map.setBasemap(key);
         UI.syncBasemapButtons();
         renderBasemapSelector(); // re-render to update active highlight
       });
@@ -991,7 +855,7 @@
   function showDrawBanner(kind) {
     const banner = document.getElementById('draw-banner');
     if (!banner) return;
-    banner.classList.remove('hidden');
+    banner.hidden = false;
     const finishBtn = document.getElementById('btn-finish-draw');
     const cancelBtn = document.getElementById('btn-cancel-draw');
 
@@ -1015,16 +879,16 @@
           Toast.show('Box Number is required.', 'warn');
           return;
         }
-        if (window.FirstDue.Map.findBoxByNumber(boxNumber.trim())) {
+        if (window.BoxRecall.Map.findBoxByNumber(boxNumber.trim())) {
           Toast.show('Box ' + boxNumber.trim() + ' already exists.', 'error');
           return;
         }
         const label = window.prompt('Optional label for this box (or leave blank):') || '';
-        const v = window.FirstDue.Map.finishDrawing();
+        const v = window.BoxRecall.Map.finishDrawing();
         if (!v) return;
         const trimmedBoxNumber = boxNumber.trim();
         saveNewBoxWithStreetLookup(v, trimmedBoxNumber, label.trim()).catch(function (err) {
-          console.error('[FirstDue] saveNewBoxWithStreetLookup failed:', err);
+          console.error('[BoxRecall] saveNewBoxWithStreetLookup failed:', err);
           Toast.show('Box ' + trimmedBoxNumber + ' saved, but street lookup failed unexpectedly. Add streets manually below.', 'warn', { duration: 7000 });
         });
       } else {
@@ -1037,10 +901,10 @@
           Toast.show('Street name is required.', 'warn');
           return;
         }
-        const feature = window.FirstDue.Map.finishStreetDrawing(name.trim());
+        const feature = window.BoxRecall.Map.finishStreetDrawing(name.trim());
         if (!feature) return;
         Store.addStreet(feature);
-        window.FirstDue._streetDrawActive = false;
+        window.BoxRecall._streetDrawActive = false;
         hideDrawBanner();
         syncTopBarDrawButtons();
         renderActiveTab();
@@ -1050,10 +914,10 @@
 
     newCancel.addEventListener('click', function () {
       if (kind === 'box') {
-        window.FirstDue.Map.cancelDrawing();
+        window.BoxRecall.Map.cancelDrawing();
       } else {
-        window.FirstDue.Map.cancelStreetDrawing();
-        window.FirstDue._streetDrawActive = false;
+        window.BoxRecall.Map.cancelStreetDrawing();
+        window.BoxRecall._streetDrawActive = false;
       }
       hideDrawBanner();
       syncTopBarDrawButtons();
@@ -1065,14 +929,14 @@
 
   function hideDrawBanner() {
     const banner = document.getElementById('draw-banner');
-    if (banner) banner.classList.add('hidden');
+    if (banner) banner.hidden = true;
   }
 
   function updateDrawBannerFinishState() {
     const finishBtn = document.getElementById('btn-finish-draw');
     if (!finishBtn) return;
-    if (window.FirstDue._streetDrawActive) {
-      finishBtn.disabled = window.FirstDue.Map.getStreetDrawVertexCount() < 2;
+    if (window.BoxRecall._streetDrawActive) {
+      finishBtn.disabled = window.BoxRecall.Map.getStreetDrawVertexCount() < 2;
     } else {
       finishBtn.disabled = Store.state.drawingVertices.length < 3;
     }
@@ -1103,17 +967,16 @@
   // ---------------------------------------------------------------------
   // EXPORTS
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  window.FirstDue.UI = window.FirstDue.UI || {};
-  Object.assign(window.FirstDue.UI, {
-    renderStudyTab: renderStudyTab,
-    renderQuizTab: renderQuizTab,
+  window.BoxRecall = window.BoxRecall || {};
+  window.BoxRecall.UI = window.BoxRecall.UI || {};
+  Object.assign(window.BoxRecall.UI, {
     renderQuizOverlay: renderQuizOverlay,
     flashFeedback: flashFeedback,
     bindDynamicHandlers: bindDynamicHandlers,
     syncTopBarLabelButtons: syncTopBarLabelButtons,
     syncTopBarDrawButtons: syncTopBarDrawButtons,
     syncBasemapButtons: syncBasemapButtons,
+    syncThemeButtons: syncThemeButtons,
     renderBasemapSelector: renderBasemapSelector,
     showDrawBanner: showDrawBanner,
     hideDrawBanner: hideDrawBanner,
@@ -1127,8 +990,8 @@
 
   // Override renderActiveTab to also re-render the quiz overlay (overlay is
   // outside the tab content containers, so it needs explicit refresh too).
-  const originalRenderActiveTab = window.FirstDue.UI.renderActiveTab;
-  window.FirstDue.UI.renderActiveTab = function () {
+  const originalRenderActiveTab = window.BoxRecall.UI.renderActiveTab;
+  window.BoxRecall.UI.renderActiveTab = function () {
     originalRenderActiveTab();
     renderQuizOverlay();
     syncTopBarLabelButtons();

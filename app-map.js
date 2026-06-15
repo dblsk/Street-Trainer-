@@ -1,12 +1,12 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-map.js — Leaflet map setup, layer rendering, drawing tool, box focus
 // ============================================================================
 
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
   const Toast = FD.Toast;
 
@@ -76,7 +76,16 @@
   // Overpass API: free OpenStreetMap road-data query service, used to
   // auto-populate a box's street list from its drawn polygon.
   const OVERPASS_ENDPOINT = 'https://overpass-api.de/api/interpreter';
-  const OVERPASS_TIMEOUT_MS = 25000;
+  // Client-side abort timeout: must exceed the server-side [timeout:N]
+  // directive below, plus headroom for network latency.
+  const OVERPASS_TIMEOUT_MS = 75000;
+  // Server-side query timeout (the [timeout:N] directive in the query
+  // itself). Real fire-box boundaries can have 50-100+ vertices, and the
+  // poly: filter's point-in-polygon tests against every candidate way get
+  // expensive for complex polygons — 25s was frequently insufficient and
+  // Overpass would return a PARTIAL result set (HTTP 200 + a `remark` field)
+  // rather than an error, which looked like "only 1-3 streets found".
+  const OVERPASS_QUERY_TIMEOUT_SEC = 60;
 
   // highway tag values we treat as "streets" for quiz purposes — excludes
   // footways, cycleways, service alleys, etc. which would clutter the roster.
@@ -109,7 +118,7 @@
     const settings = Store.state.settings;
 
     if (typeof L === 'undefined') {
-      console.error('[FirstDue] Leaflet library (L) is not available — check network/CDN access.');
+      console.error('[BoxRecall] Leaflet library (L) is not available — check network/CDN access.');
       Store.setMapError(true);
       return null;
     }
@@ -123,7 +132,7 @@
         worldCopyJump: true,
       });
     } catch (err) {
-      console.error('[FirstDue] Leaflet map initialization failed:', err);
+      console.error('[BoxRecall] Leaflet map initialization failed:', err);
       map = null;
       Store.setMapError(true);
       return null;
@@ -152,7 +161,7 @@
       Store.setMapReady(true);
       return map;
     } catch (err) {
-      console.error('[FirstDue] Map layer setup failed:', err);
+      console.error('[BoxRecall] Map layer setup failed:', err);
       Store.setMapError(true);
       return null;
     }
@@ -328,14 +337,14 @@
       try {
         addBoxLayer(feature);
       } catch (err) {
-        console.error('[FirstDue] Failed to render box feature:', feature, err);
+        console.error('[BoxRecall] Failed to render box feature:', feature, err);
       }
     });
   }
 
   function addBoxLayer(feature) {
     if (!feature.geometry || (feature.geometry.type !== 'Polygon' && feature.geometry.type !== 'MultiPolygon')) {
-      console.warn('[FirstDue] Skipping non-polygon box feature:', feature);
+      console.warn('[BoxRecall] Skipping non-polygon box feature:', feature);
       return null;
     }
 
@@ -395,14 +404,14 @@
       try {
         addStreetLayer(feature);
       } catch (err) {
-        console.error('[FirstDue] Failed to render street feature:', feature, err);
+        console.error('[BoxRecall] Failed to render street feature:', feature, err);
       }
     });
   }
 
   function addStreetLayer(feature) {
     if (!feature.geometry || feature.geometry.type !== 'LineString') {
-      console.warn('[FirstDue] Skipping non-LineString street feature:', feature);
+      console.warn('[BoxRecall] Skipping non-LineString street feature:', feature);
       return null;
     }
 
@@ -500,7 +509,7 @@
       const bounds = layer.getBounds();
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
     } catch (err) {
-      console.error('[FirstDue] fitBounds failed for box ' + boxNumber + ':', err);
+      console.error('[BoxRecall] fitBounds failed for box ' + boxNumber + ':', err);
       Toast.show('Could not zoom to Box ' + boxNumber + '.', 'error');
     }
 
@@ -562,7 +571,7 @@
       // Keep tile layer below the dim overlay but the overlay below the boxes/streets
       if (tileLayer) tileLayer.bringToBack();
     } catch (err) {
-      console.error('[FirstDue] Failed to apply dim overlay:', err);
+      console.error('[BoxRecall] Failed to apply dim overlay:', err);
       // Non-fatal — focus still works without dimming
     }
   }
@@ -734,17 +743,30 @@
    * pairs (the same format Store.state.drawingVertices uses).
    *
    * Overpass's `poly:` filter expects a space-separated "lat lon lat lon..."
-   * string and does NOT need the ring closed (it closes it implicitly), but
-   * closing it is harmless and matches GeoJSON convention.
+   * string and does NOT need the ring closed — it implicitly adds a closing
+   * edge from the last listed point back to the first. If `verts` already
+   * ends with a duplicate of its first point (as GeoJSON Polygon exterior
+   * rings always do, per RFC 7946 — which is exactly what Fairfax County's
+   * imported box geometries are), that duplicate is stripped here so Overpass
+   * doesn't end up with a redundant zero-length closing edge at the seam.
    */
   function buildOverpassQuery(verts) {
-    const polyStr = verts.map(function (v) {
+    let ring = verts;
+    if (ring.length >= 2) {
+      const first = ring[0];
+      const last = ring[ring.length - 1];
+      if (Math.abs(first[0] - last[0]) < 1e-9 && Math.abs(first[1] - last[1]) < 1e-9) {
+        ring = ring.slice(0, -1);
+      }
+    }
+
+    const polyStr = ring.map(function (v) {
       return round6(v[0]) + ' ' + round6(v[1]);
     }).join(' ');
 
     const highwayFilter = '["highway"~"^(' + OSM_HIGHWAY_STREET_TYPES.join('|') + ')$"]';
 
-    return '[out:json][timeout:25];' +
+    return '[out:json][timeout:' + OVERPASS_QUERY_TIMEOUT_SEC + '];' +
       'way' + highwayFilter + '["name"](poly:"' + polyStr + '");' +
       'out geom;';
   }
@@ -789,13 +811,13 @@
       const msg = (err && err.name === 'AbortError')
         ? 'Street lookup timed out. You can add streets manually below.'
         : 'Street lookup failed (network error). You can add streets manually below.';
-      console.error('[FirstDue] Overpass fetch failed:', err);
+      console.error('[BoxRecall] Overpass fetch failed:', err);
       return { features: [], rawWayCount: 0, error: msg };
     }
     if (timeoutId) clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.error('[FirstDue] Overpass returned HTTP ' + response.status);
+      console.error('[BoxRecall] Overpass returned HTTP ' + response.status);
       const statusMsg = response.status === 429
         ? 'Street lookup is rate-limited right now (too many requests). Try again in a minute, or add streets manually below.'
         : 'Street lookup failed (server returned ' + response.status + '). You can add streets manually below.';
@@ -806,8 +828,20 @@
     try {
       data = await response.json();
     } catch (err) {
-      console.error('[FirstDue] Overpass response was not valid JSON:', err);
+      console.error('[BoxRecall] Overpass response was not valid JSON:', err);
       return { features: [], rawWayCount: 0, error: 'Street lookup returned an unreadable response. You can add streets manually below.' };
+    }
+
+    // Overpass can return HTTP 200 with a PARTIAL result set if the
+    // server-side [timeout:N] is reached mid-query — signaled via a
+    // top-level "remark" field (e.g. "runtime error: Query timed out in
+    // \"query\" at line 1 after 60 seconds."), NOT via an HTTP error status.
+    // Without this check, a partial set (sometimes just 1-3 ways for a large
+    // polygon) would silently look like a complete, successful lookup.
+    let timeoutRemark = null;
+    if (data && typeof data.remark === 'string' && /runtime (error|remark)/i.test(data.remark)) {
+      timeoutRemark = data.remark;
+      console.warn('[BoxRecall] Overpass returned a remark (likely partial results):', timeoutRemark);
     }
 
     const elements = (data && Array.isArray(data.elements)) ? data.elements : [];
@@ -836,7 +870,11 @@
       };
     });
 
-    return { features: features, rawWayCount: ways.length, error: null };
+    const partialResultsError = timeoutRemark
+      ? 'Street lookup timed out partway through for this area. There may be more streets than were found — you can add missing ones manually below, or try again later when Overpass is less busy.'
+      : null;
+
+    return { features: features, rawWayCount: ways.length, error: partialResultsError };
   }
 
   /**
@@ -926,13 +964,13 @@
   function onMapClick(e) {
     if (Store.state.drawingActive) {
       addDrawingVertex(e.latlng);
-      window.FirstDue.UI && window.FirstDue.UI.onDrawVertexAdded();
+      window.BoxRecall.UI && window.BoxRecall.UI.onDrawVertexAdded();
       return;
     }
 
     if (streetDrawActive) {
       addStreetDrawVertex(e.latlng);
-      window.FirstDue.UI && window.FirstDue.UI.onStreetDrawVertexAdded();
+      window.BoxRecall.UI && window.BoxRecall.UI.onStreetDrawVertexAdded();
       return;
     }
 
@@ -940,11 +978,11 @@
     // delegated to the quiz engine if active.
     if (Store.state.quiz.phase === 'QUIZ_ONGOING') {
       if (Store.state.quiz.mode === 'locate-street') {
-        window.FirstDue.Quiz && window.FirstDue.Quiz.onMapTapLocate(e.latlng);
+        window.BoxRecall.Quiz && window.BoxRecall.Quiz.onMapTapLocate(e.latlng);
         return;
       }
       if (Store.state.quiz.mode === 'box-identifier') {
-        window.FirstDue.Quiz && window.FirstDue.Quiz.onMapTapBoxIdentifier(e.latlng);
+        window.BoxRecall.Quiz && window.BoxRecall.Quiz.onMapTapBoxIdentifier(e.latlng);
         return;
       }
     }
@@ -1004,7 +1042,7 @@
     try {
       map.fitBounds(layer.getBounds(), { padding: padding || [40, 40], maxZoom: 18, animate: true });
     } catch (err) {
-      console.error('[FirstDue] panToBoxQuiet failed:', err);
+      console.error('[BoxRecall] panToBoxQuiet failed:', err);
     }
   }
 
@@ -1040,15 +1078,15 @@
     Store.on('ui:mapError', function (hasError) {
       const banner = document.getElementById('map-error-banner');
       if (!banner) return;
-      banner.classList.toggle('hidden', !hasError);
+      banner.hidden = !hasError;
     });
   }
 
   // ---------------------------------------------------------------------
   // EXPORTS
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  window.FirstDue.Map = {
+  window.BoxRecall = window.BoxRecall || {};
+  window.BoxRecall.Map = {
     initMap: initMap,
     getMap: function () { return map; },
     invalidateSize: invalidateSize,

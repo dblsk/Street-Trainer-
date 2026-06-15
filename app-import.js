@@ -1,5 +1,5 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-import.js — Import response box boundaries from Fairfax County's
 // public Fire & Rescue GIS data (ArcGIS REST), so users don't have to
 // hand-draw boxes that already exist in the county's official dataset.
@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
   const Toast = FD.Toast;
 
@@ -134,13 +134,13 @@
         const msg = (err && err.name === 'AbortError')
           ? 'Fairfax County GIS lookup timed out. Try again, or draw the box manually.'
           : 'Fairfax County GIS lookup failed (network error). Try again, or draw the box manually.';
-        console.error('[FirstDue] Fairfax FRD fetch failed:', err);
+        console.error('[BoxRecall] Fairfax FRD fetch failed:', err);
         return { features: allFeatures, rawCount: allFeatures.length, error: msg };
       }
       if (timeoutId) clearTimeout(timeoutId);
 
       if (!response.ok) {
-        console.error('[FirstDue] Fairfax FRD query returned HTTP ' + response.status);
+        console.error('[BoxRecall] Fairfax FRD query returned HTTP ' + response.status);
         return { features: allFeatures, rawCount: allFeatures.length, error: 'Fairfax County GIS lookup failed (server returned ' + response.status + '). Try again, or draw the box manually.' };
       }
 
@@ -148,7 +148,7 @@
       try {
         data = await response.json();
       } catch (err) {
-        console.error('[FirstDue] Fairfax FRD response was not valid JSON:', err);
+        console.error('[BoxRecall] Fairfax FRD response was not valid JSON:', err);
         return { features: allFeatures, rawCount: allFeatures.length, error: 'Fairfax County GIS returned an unreadable response. Try again, or draw the box manually.' };
       }
 
@@ -156,7 +156,7 @@
       // (e.g. malformed where-clause) — surface this distinctly.
       if (data && data.error) {
         const detail = (data.error.message || 'Unknown error') + (data.error.details ? ' (' + [].concat(data.error.details).join('; ') + ')' : '');
-        console.error('[FirstDue] Fairfax FRD query error:', detail);
+        console.error('[BoxRecall] Fairfax FRD query error:', detail);
         return { features: allFeatures, rawCount: allFeatures.length, error: 'Fairfax County GIS rejected the query: ' + detail };
       }
 
@@ -186,14 +186,14 @@
    */
   function convertFairfaxFeatureToBoxFeature(feature) {
     if (!feature || !feature.geometry || (feature.geometry.type !== 'Polygon' && feature.geometry.type !== 'MultiPolygon')) {
-      console.warn('[FirstDue] Skipping Fairfax FRD feature with unusable geometry:', feature && feature.geometry && feature.geometry.type);
+      console.warn('[BoxRecall] Skipping Fairfax FRD feature with unusable geometry:', feature && feature.geometry && feature.geometry.type);
       return null;
     }
 
     const props = feature.properties || {};
     const rawBoxNum = props.FIRE_BOX_NUM;
     if (rawBoxNum === null || rawBoxNum === undefined) {
-      console.warn('[FirstDue] Skipping Fairfax FRD feature with no FIRE_BOX_NUM:', props);
+      console.warn('[BoxRecall] Skipping Fairfax FRD feature with no FIRE_BOX_NUM:', props);
       return null;
     }
 
@@ -229,8 +229,8 @@
   // ---------------------------------------------------------------------
   // EXPORTS
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  window.FirstDue.Import = {
+  window.BoxRecall = window.BoxRecall || {};
+  window.BoxRecall.Import = {
     parseBoxNumberList: parseBoxNumberList,
     parseStationNumber: parseStationNumber,
     buildWhereClause: buildWhereClause,

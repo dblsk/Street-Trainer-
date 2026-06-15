@@ -1,5 +1,5 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-quiz.js — Active Recall Quiz Engine (Module 3)
 //
 // State machine: IDLE -> QUIZ_ONGOING -> ANSWER_SUBMITTED -> RESULTS_SCORE
@@ -9,10 +9,10 @@
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
   const Toast = FD.Toast;
-  const MapMod = function () { return window.FirstDue.Map; }; // lazy ref (loaded after this file)
+  const MapMod = function () { return window.BoxRecall.Map; }; // lazy ref (loaded after this file)
 
   const DEFAULT_QUESTIONS_PER_SESSION = 8;
 
@@ -75,7 +75,7 @@
 
     const streets = streetsForBox(boxNumber);
     if (streets.length === 0) {
-      return { ok: false, reason: 'Box ' + boxNumber + ' has no streets assigned yet. Add streets in the Box Builder first.' };
+      return { ok: false, reason: 'Box ' + boxNumber + ' has no streets assigned yet. Add streets in Manage first.' };
     }
 
     if ((mode === 'name-street' || mode === 'locate-street') && streets.length < 1) {
@@ -187,7 +187,7 @@
       }
     }
 
-    window.FirstDue.UI && window.FirstDue.UI.renderQuizOverlay();
+    window.BoxRecall.UI && window.BoxRecall.UI.renderQuizOverlay();
   }
 
   /** Pick a pseudo-random point inside a box polygon for the Box Identifier pin. */
@@ -261,8 +261,8 @@
     });
 
     MapMod().flashStreetResult(target.id, match.isMatch);
-    window.FirstDue.UI && window.FirstDue.UI.renderQuizOverlay();
-    window.FirstDue.UI && window.FirstDue.UI.flashFeedback(match.isMatch);
+    window.BoxRecall.UI && window.BoxRecall.UI.renderQuizOverlay();
+    window.BoxRecall.UI && window.BoxRecall.UI.flashFeedback(match.isMatch);
   }
 
   /**
@@ -316,8 +316,8 @@
     MapMod().highlightStreetForQuiz(target.id, correct ? 'green' : 'green');
     MapMod().flashStreetResult(target.id, true);
 
-    window.FirstDue.UI && window.FirstDue.UI.renderQuizOverlay();
-    window.FirstDue.UI && window.FirstDue.UI.flashFeedback(correct);
+    window.BoxRecall.UI && window.BoxRecall.UI.renderQuizOverlay();
+    window.BoxRecall.UI && window.BoxRecall.UI.flashFeedback(correct);
   }
 
   /**
@@ -354,8 +354,8 @@
       if (layer.bringToFront) layer.bringToFront();
     }
 
-    window.FirstDue.UI && window.FirstDue.UI.renderQuizOverlay();
-    window.FirstDue.UI && window.FirstDue.UI.flashFeedback(correct);
+    window.BoxRecall.UI && window.BoxRecall.UI.renderQuizOverlay();
+    window.BoxRecall.UI && window.BoxRecall.UI.flashFeedback(correct);
   }
 
   /** Tapping the map directly during box-identifier mode (alternate input). */
@@ -391,14 +391,14 @@
     if (Store.state.quiz.phase === 'QUIZ_ONGOING') {
       presentCurrentQuestion();
     } else {
-      window.FirstDue.UI && window.FirstDue.UI.renderQuizOverlay();
+      window.BoxRecall.UI && window.BoxRecall.UI.renderQuizOverlay();
     }
   }
 
   function endQuiz() {
     MapMod().clearQuizHighlights();
     Store.quizDispatch('END');
-    window.FirstDue.UI && window.FirstDue.UI.renderQuizOverlay();
+    window.BoxRecall.UI && window.BoxRecall.UI.renderQuizOverlay();
   }
 
   function getSessionSummary() {
@@ -439,8 +439,8 @@
   // ---------------------------------------------------------------------
   // EXPORTS
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  window.FirstDue.Quiz = {
+  window.BoxRecall = window.BoxRecall || {};
+  window.BoxRecall.Quiz = {
     DEFAULT_QUESTIONS_PER_SESSION: DEFAULT_QUESTIONS_PER_SESSION,
     validateQuizStart: validateQuizStart,
     startQuiz: startQuiz,

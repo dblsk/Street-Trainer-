@@ -1,5 +1,5 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-core.js — State management, persistence, configuration
 // ============================================================================
 
@@ -23,6 +23,7 @@
     fuzzyTolerance: 1,
     labelsVisible: true,
     basemap: 'satellite', // 'satellite' | 'light' | 'dark'
+    theme: 'auto',        // 'auto' (follow OS) | 'light' | 'dark'
   };
 
   const MASTERY_THRESHOLDS = {
@@ -93,7 +94,7 @@
       const parsed = JSON.parse(raw);
       return parsed;
     } catch (err) {
-      console.warn('[FirstDue] LocalStorage read failed for key "' + key + '":', err);
+      console.warn('[BoxRecall] LocalStorage read failed for key "' + key + '":', err);
       return deepClone(fallback);
     }
   }
@@ -107,7 +108,7 @@
       window.localStorage.setItem(key, JSON.stringify(value));
       return true;
     } catch (err) {
-      console.error('[FirstDue] LocalStorage write failed for key "' + key + '":', err);
+      console.error('[BoxRecall] LocalStorage write failed for key "' + key + '":', err);
       Toast && Toast.show('Save failed — storage may be full or unavailable.', 'error');
       return false;
     }
@@ -118,7 +119,7 @@
       window.localStorage.removeItem(key);
       return true;
     } catch (err) {
-      console.error('[FirstDue] LocalStorage remove failed for key "' + key + '":', err);
+      console.error('[BoxRecall] LocalStorage remove failed for key "' + key + '":', err);
       return false;
     }
   }
@@ -275,13 +276,14 @@
       settings: Object.assign({}, DEFAULT_SETTINGS, lsGet(LS_KEYS.SETTINGS, {})),
 
       // UI / runtime state (not persisted)
-      activeTab: 'dashboard',
+      activeTab: 'home',
       activeBoxNumber: null,    // currently focused Box Number (string)
       drawingActive: false,
       drawingVertices: [],      // array of [lat,lng] while drawing
       labelsVisible: true,
       mapReady: false,
       mapError: false,
+      selectedBoxIds: new Set(), // box feature ids currently checked in Manage's bulk-select list
 
       // Quiz state machine
       quiz: {
@@ -310,10 +312,10 @@
 
     function emit(event, payload) {
       (listeners[event] || []).forEach(function (fn) {
-        try { fn(payload); } catch (err) { console.error('[FirstDue] Listener error for "' + event + '":', err); }
+        try { fn(payload); } catch (err) { console.error('[BoxRecall] Listener error for "' + event + '":', err); }
       });
       (listeners['*'] || []).forEach(function (fn) {
-        try { fn({ event: event, payload: payload }); } catch (err) { console.error('[FirstDue] Wildcard listener error:', err); }
+        try { fn({ event: event, payload: payload }); } catch (err) { console.error('[BoxRecall] Wildcard listener error:', err); }
       });
     }
 
@@ -340,12 +342,63 @@
       return true;
     }
 
+    /**
+     * Remove a box AND cascade-delete everything that belongs to it: its
+     * streets (matched by boxNumber) and its quiz stats. This is the only
+     * way boxes are removed — there is no "orphaned streets" state by
+     * design, so the street list and dashboard never accumulate
+     * disconnected data after a box is deleted.
+     *
+     * Returns true if a box was actually removed.
+     */
     function removeBox(boxId) {
-      const before = state.boxes.features.length;
+      const target = state.boxes.features.find(function (f) { return f.id === boxId; });
+      if (!target) return false;
+
+      const boxNumber = target.properties.boxNumber;
+
       state.boxes.features = state.boxes.features.filter(function (f) { return f.id !== boxId; });
-      // Cascade: remove streets assigned to this box's number? -> Keep streets but they'll show as "unassigned"
       setBoxes(state.boxes);
-      return state.boxes.features.length < before;
+
+      state.streets.features = state.streets.features.filter(function (f) {
+        return !(f.properties && String(f.properties.boxNumber) === String(boxNumber));
+      });
+      setStreets(state.streets);
+
+      resetBoxStats(boxNumber);
+      state.selectedBoxIds.delete(boxId);
+
+      return true;
+    }
+
+    /**
+     * Cascade-delete multiple boxes (and their streets + stats) in a single
+     * batched operation — used by bulk "Delete Selected". Equivalent to
+     * calling removeBox() for each id, but only writes to LocalStorage and
+     * emits change events once per affected collection rather than once per
+     * box, which matters when deleting many boxes at once.
+     *
+     * Returns the number of boxes actually removed.
+     */
+    function removeBoxesCascade(boxIds) {
+      const idSet = new Set(boxIds);
+      const targets = state.boxes.features.filter(function (f) { return idSet.has(f.id); });
+      if (targets.length === 0) return 0;
+
+      const boxNumbers = new Set(targets.map(function (f) { return String(f.properties.boxNumber); }));
+
+      state.boxes.features = state.boxes.features.filter(function (f) { return !idSet.has(f.id); });
+      setBoxes(state.boxes);
+
+      state.streets.features = state.streets.features.filter(function (f) {
+        return !(f.properties && boxNumbers.has(String(f.properties.boxNumber)));
+      });
+      setStreets(state.streets);
+
+      boxNumbers.forEach(function (bn) { resetBoxStats(bn); });
+      idSet.forEach(function (id) { state.selectedBoxIds.delete(id); });
+
+      return targets.length;
     }
 
     function setStreets(featureCollection) {
@@ -422,6 +475,52 @@
       emit('settings:changed', state.settings);
     }
 
+    // -- Theme (light/dark) -------------------------------------------------
+
+    /**
+     * Resolve the stored theme preference ('light' | 'dark' | 'auto') to an
+     * actual 'light' | 'dark' value, following the OS preference when set
+     * to 'auto'.
+     */
+    function getEffectiveTheme() {
+      const pref = state.settings.theme || 'auto';
+      if (pref === 'light' || pref === 'dark') return pref;
+      const prefersDark = typeof window !== 'undefined' && window.matchMedia &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches;
+      return prefersDark ? 'dark' : 'light';
+    }
+
+    /**
+     * Apply a theme to <html> (adds/removes the .dark class) and persist the
+     * preference. Pass 'auto' to follow the OS preference going forward;
+     * pass 'light'/'dark' to pin it explicitly. Does not persist if the
+     * resolved value hasn't changed, to avoid redundant DOM writes.
+     */
+    function setTheme(pref) {
+      if (pref !== 'light' && pref !== 'dark' && pref !== 'auto') pref = 'auto';
+      setSettings({ theme: pref });
+      applyEffectiveTheme();
+    }
+
+    /**
+     * Toggle between light and dark based on the CURRENTLY DISPLAYED theme
+     * (not the stored preference) — so toggling away from 'auto' moves to
+     * the opposite of whatever is on screen right now, which is the
+     * intuitive behavior regardless of what 'auto' currently resolves to.
+     */
+    function toggleTheme() {
+      const current = getEffectiveTheme();
+      setTheme(current === 'dark' ? 'light' : 'dark');
+    }
+
+    /** Sync <html class="dark"> with the resolved effective theme. */
+    function applyEffectiveTheme() {
+      if (typeof document === 'undefined') return;
+      const dark = getEffectiveTheme() === 'dark';
+      document.documentElement.classList.toggle('dark', dark);
+      emit('ui:theme', getEffectiveTheme());
+    }
+
     // -- Transient UI setters ----------------------------------------------
 
     function setActiveTab(tab) {
@@ -432,6 +531,39 @@
     function setActiveBoxNumber(boxNumber) {
       state.activeBoxNumber = boxNumber;
       emit('ui:activeBox', boxNumber);
+    }
+
+    // -- Bulk box selection (Manage tab) ------------------------------------
+
+    function toggleBoxSelection(boxId) {
+      if (state.selectedBoxIds.has(boxId)) {
+        state.selectedBoxIds.delete(boxId);
+      } else {
+        state.selectedBoxIds.add(boxId);
+      }
+      emit('ui:boxSelection', state.selectedBoxIds);
+    }
+
+    function isBoxSelected(boxId) {
+      return state.selectedBoxIds.has(boxId);
+    }
+
+    /**
+     * Select all currently-defined boxes, or clear the selection if every
+     * box is already selected — i.e. the standard "select all" checkbox
+     * toggle behavior (acts as "select none" once everything is checked).
+     */
+    function toggleSelectAllBoxes() {
+      const allIds = state.boxes.features.map(function (f) { return f.id; });
+      const allSelected = allIds.length > 0 && allIds.every(function (id) { return state.selectedBoxIds.has(id); });
+      state.selectedBoxIds = allSelected ? new Set() : new Set(allIds);
+      emit('ui:boxSelection', state.selectedBoxIds);
+    }
+
+    function clearBoxSelection() {
+      if (state.selectedBoxIds.size === 0) return;
+      state.selectedBoxIds = new Set();
+      emit('ui:boxSelection', state.selectedBoxIds);
     }
 
     function setDrawingActive(active) {
@@ -518,7 +650,7 @@
           });
           break;
         default:
-          console.warn('[FirstDue] Unknown quiz action:', action);
+          console.warn('[BoxRecall] Unknown quiz action:', action);
           return;
       }
       emit('quiz:changed', state.quiz);
@@ -566,7 +698,7 @@
 
     function exportGeoJSON() {
       return {
-        type: 'FirstDueExport',
+        type: 'BoxRecallExport',
         version: 1,
         exportedAt: new Date().toISOString(),
         boxes: state.boxes,
@@ -576,7 +708,7 @@
 
     function exportStats() {
       return {
-        type: 'FirstDueStatsExport',
+        type: 'BoxRecallStatsExport',
         version: 1,
         exportedAt: new Date().toISOString(),
         stats: state.stats,
@@ -604,7 +736,7 @@
       on: on,
       emit: emit,
       // boxes
-      setBoxes: setBoxes, addBox: addBox, updateBox: updateBox, removeBox: removeBox,
+      setBoxes: setBoxes, addBox: addBox, updateBox: updateBox, removeBox: removeBox, removeBoxesCascade: removeBoxesCascade,
       // streets
       setStreets: setStreets, addStreet: addStreet, updateStreet: updateStreet, removeStreet: removeStreet,
       // stats
@@ -614,9 +746,17 @@
       resetBoxStats: resetBoxStats,
       // settings
       setSettings: setSettings,
+      getEffectiveTheme: getEffectiveTheme,
+      setTheme: setTheme,
+      toggleTheme: toggleTheme,
+      applyEffectiveTheme: applyEffectiveTheme,
       // ui
       setActiveTab: setActiveTab,
       setActiveBoxNumber: setActiveBoxNumber,
+      toggleBoxSelection: toggleBoxSelection,
+      isBoxSelected: isBoxSelected,
+      toggleSelectAllBoxes: toggleSelectAllBoxes,
+      clearBoxSelection: clearBoxSelection,
       setDrawingActive: setDrawingActive,
       pushDrawingVertex: pushDrawingVertex,
       setLabelsVisible: setLabelsVisible,
@@ -726,8 +866,8 @@
   // ---------------------------------------------------------------------
   // EXPORTS (attach to window for cross-file access in this single-file app)
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  Object.assign(window.FirstDue, {
+  window.BoxRecall = window.BoxRecall || {};
+  Object.assign(window.BoxRecall, {
     LS_KEYS: LS_KEYS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     MASTERY_THRESHOLDS: MASTERY_THRESHOLDS,

@@ -1,15 +1,15 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-init.js — Bootstrap: static event wiring, mobile sheet drag, app init
 // ============================================================================
 
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
   const Toast = FD.Toast;
-  const UI = window.FirstDue.UI;
+  const UI = window.BoxRecall.UI;
 
   // ---------------------------------------------------------------------
   // TAB SWITCHING
@@ -80,12 +80,12 @@
   // ---------------------------------------------------------------------
 
   function openDiagnosticsModal() {
-    document.getElementById('diagnostics-modal').classList.remove('hidden');
+    document.getElementById('diagnostics-modal').hidden = false;
     UI.refreshIcons(document.getElementById('diagnostics-modal'));
   }
 
   function closeDiagnosticsModal() {
-    document.getElementById('diagnostics-modal').classList.add('hidden');
+    document.getElementById('diagnostics-modal').hidden = true;
   }
 
   function bindDiagnosticsModal() {
@@ -100,8 +100,8 @@
       output.innerHTML = '<div class="diag-info">Running…</div>';
       // Defer slightly so the "Running…" message paints before tests run
       setTimeout(async function () {
-        const summary = await window.FirstDue.Diagnostics.runAll();
-        window.FirstDue.Diagnostics.renderToElement(output);
+        const summary = await window.BoxRecall.Diagnostics.runAll();
+        window.BoxRecall.Diagnostics.renderToElement(output);
         if (summary.failed === 0) {
           Toast.show('Diagnostics: all ' + summary.passed + ' checks passed.', 'success');
         } else {
@@ -126,7 +126,7 @@
       if (!btn) return;
       btn.addEventListener('click', function () {
         const newVal = !Store.state.labelsVisible;
-        window.FirstDue.Map.setLabelsVisible(newVal);
+        window.BoxRecall.Map.setLabelsVisible(newVal);
         UI.syncTopBarLabelButtons();
         UI.renderActiveTab(); // refresh the study tab's toggle switch if visible
       });
@@ -136,17 +136,17 @@
     [document.getElementById('btn-draw-mode'), document.getElementById('btn-draw-mode-m')].forEach(function (btn) {
       if (!btn) return;
       btn.addEventListener('click', function () {
-        if (Store.state.drawingActive || window.FirstDue._streetDrawActive) {
+        if (Store.state.drawingActive || window.BoxRecall._streetDrawActive) {
           // Cancel whichever drawing mode is active
-          if (Store.state.drawingActive) window.FirstDue.Map.cancelDrawing();
-          if (window.FirstDue._streetDrawActive) {
-            window.FirstDue.Map.cancelStreetDrawing();
-            window.FirstDue._streetDrawActive = false;
+          if (Store.state.drawingActive) window.BoxRecall.Map.cancelDrawing();
+          if (window.BoxRecall._streetDrawActive) {
+            window.BoxRecall.Map.cancelStreetDrawing();
+            window.BoxRecall._streetDrawActive = false;
           }
           UI.hideDrawBanner();
         } else {
           Store.setActiveTab('builder');
-          window.FirstDue.Map.startDrawing();
+          window.BoxRecall.Map.startDrawing();
           UI.showDrawBanner('box');
           expandSheet();
         }
@@ -158,7 +158,7 @@
     [document.getElementById('btn-recenter'), document.getElementById('btn-recenter-m')].forEach(function (btn) {
       if (!btn) return;
       btn.addEventListener('click', function () {
-        window.FirstDue.Map.recenterHome();
+        window.BoxRecall.Map.recenterHome();
         UI.renderActiveTab();
       });
     });
@@ -167,25 +167,35 @@
     [document.getElementById('btn-basemap'), document.getElementById('btn-basemap-m')].forEach(function (btn) {
       if (!btn) return;
       btn.addEventListener('click', function () {
-        const order = window.FirstDue.Map.BASEMAP_ORDER;
-        const current = window.FirstDue.Map.getBasemap();
+        const order = window.BoxRecall.Map.BASEMAP_ORDER;
+        const current = window.BoxRecall.Map.getBasemap();
         const next = order[(order.indexOf(current) + 1) % order.length];
-        window.FirstDue.Map.setBasemap(next);
+        window.BoxRecall.Map.setBasemap(next);
         UI.syncBasemapButtons();
-        const label = window.FirstDue.Map.BASEMAPS[next].label;
+        const label = window.BoxRecall.Map.BASEMAPS[next].label;
         Toast.show('Basemap: ' + label, 'info', { duration: 1800 });
       });
     });
 
+    // Theme toggle (desktop + mobile) — flips between light and dark.
+    [document.getElementById('btn-theme-toggle'), document.getElementById('btn-theme-toggle-m')].forEach(function (btn) {
+      if (!btn) return;
+      btn.addEventListener('click', function () {
+        Store.toggleTheme();
+        UI.syncThemeButtons();
+      });
+    });
+
     document.getElementById('btn-clear-focus').addEventListener('click', function () {
-      window.FirstDue.Map.clearFocus();
-      Store.setActiveTab('dashboard');
+      window.BoxRecall.Map.clearFocus();
+      Store.setActiveBoxNumber(null);
+      Store.setActiveTab('home');
       UI.renderActiveTab();
       syncActiveBoxPill();
     });
 
     document.getElementById('btn-retry-map').addEventListener('click', function () {
-      window.FirstDue.Map.retryMapLoad();
+      window.BoxRecall.Map.retryMapLoad();
     });
   }
 
@@ -195,10 +205,10 @@
     const boxNumber = Store.state.activeBoxNumber;
     if (boxNumber) {
       label.textContent = 'BOX ' + boxNumber;
-      pill.classList.remove('hidden');
+      pill.hidden = false;
       pill.classList.add('flex');
     } else {
-      pill.classList.add('hidden');
+      pill.hidden = true;
       pill.classList.remove('flex');
     }
   }
@@ -303,12 +313,12 @@
     window.addEventListener('resize', function () {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(function () {
-        window.FirstDue.Map.invalidateSize();
+        window.BoxRecall.Map.invalidateSize();
       }, 150);
     });
 
     window.addEventListener('orientationchange', function () {
-      setTimeout(function () { window.FirstDue.Map.invalidateSize(); }, 300);
+      setTimeout(function () { window.BoxRecall.Map.invalidateSize(); }, 300);
     });
   }
 
@@ -348,19 +358,19 @@
       const settingsModal = document.getElementById('settings-modal');
       const diagModal = document.getElementById('diagnostics-modal');
 
-      if (!settingsModal.classList.contains('hidden')) { UI.closeSettingsModal(); return; }
-      if (!diagModal.classList.contains('hidden')) { closeDiagnosticsModal(); return; }
+      if (!settingsModal.hidden) { UI.closeSettingsModal(); return; }
+      if (!diagModal.hidden) { closeDiagnosticsModal(); return; }
 
       if (Store.state.drawingActive) {
-        window.FirstDue.Map.cancelDrawing();
+        window.BoxRecall.Map.cancelDrawing();
         UI.hideDrawBanner();
         UI.renderActiveTab();
         UI.syncTopBarDrawButtons();
         return;
       }
-      if (window.FirstDue._streetDrawActive) {
-        window.FirstDue.Map.cancelStreetDrawing();
-        window.FirstDue._streetDrawActive = false;
+      if (window.BoxRecall._streetDrawActive) {
+        window.BoxRecall.Map.cancelStreetDrawing();
+        window.BoxRecall._streetDrawActive = false;
         UI.hideDrawBanner();
         UI.renderActiveTab();
         UI.syncTopBarDrawButtons();
@@ -378,7 +388,7 @@
    */
   function bindGlobalErrorHandlers() {
     window.addEventListener('unhandledrejection', function (e) {
-      console.error('[FirstDue] Unhandled promise rejection:', e.reason);
+      console.error('[BoxRecall] Unhandled promise rejection:', e.reason);
       try {
         Toast.show('Something went wrong with a background task. Check the console for details.', 'error', { duration: 6000 });
       } catch (toastErr) {
@@ -389,21 +399,47 @@
     });
   }
 
+  /**
+   * If the theme preference is 'auto', re-apply the effective theme whenever
+   * the OS-level light/dark preference changes while the app is open (e.g.
+   * a sunset-based OS auto-dark-mode schedule). No-op for explicit
+   * 'light'/'dark' preferences — those are pinned regardless of the OS.
+   */
+  function bindOsThemeListener() {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = function () {
+      if ((Store.state.settings.theme || 'auto') === 'auto') {
+        Store.applyEffectiveTheme();
+        UI.syncThemeButtons();
+      }
+    };
+    if (mq.addEventListener) mq.addEventListener('change', handler);
+    else if (mq.addListener) mq.addListener(handler); // older Safari
+  }
+
   // ---------------------------------------------------------------------
   // APP INITIALIZATION
   // ---------------------------------------------------------------------
 
   function init() {
     try {
+      // 0. Re-sync the theme from Store.state.settings (the inline
+      // pre-paint <script> in <head> already applied a best-effort guess
+      // from raw localStorage before any JS module loaded; this confirms it
+      // matches the fully-initialized Store, in case DEFAULT_SETTINGS had
+      // to fill in a missing/corrupt value).
+      Store.applyEffectiveTheme();
+
       // 1. Initialize the Leaflet map first (other modules read Store.state.mapReady)
-      window.FirstDue.Map.initMap();
-      window.FirstDue.Map.bindStoreSubscriptions();
+      window.BoxRecall.Map.initMap();
+      window.BoxRecall.Map.bindStoreSubscriptions();
 
       // initMap() may have already set mapError=true before the ui:mapError
       // listener (registered above) existed to react to it — sync the
       // banner to the current state now so it isn't missed on first load.
       const errorBanner = document.getElementById('map-error-banner');
-      if (errorBanner) errorBanner.classList.toggle('hidden', !Store.state.mapError);
+      if (errorBanner) errorBanner.hidden = !Store.state.mapError;
 
       // 2. Render initial UI
       UI.renderActiveTab();
@@ -411,6 +447,7 @@
       UI.syncTopBarLabelButtons();
       UI.syncTopBarDrawButtons();
       UI.syncBasemapButtons();
+      UI.syncThemeButtons();
 
       // 3. Wire up all static controls
       bindTabSwitching();
@@ -422,6 +459,7 @@
       bindUISubscriptions();
       bindKeyboardShortcuts();
       bindGlobalErrorHandlers();
+      bindOsThemeListener();
 
       // 4. Render Lucide icons across the static shell
       UI.refreshIcons();
@@ -429,18 +467,18 @@
       // 5. Welcome toast on first run (no boxes defined yet)
       if (!Store.state.boxes.features || Store.state.boxes.features.length === 0) {
         setTimeout(function () {
-          Toast.show('Welcome! Start in Box Builder to draw your first Response Box.', 'info');
+          Toast.show('Welcome! Head to Manage to import or draw your first Response Box.', 'info');
         }, 600);
       }
 
-      console.log('[FirstDue] App initialized successfully.');
+      console.log('[BoxRecall] App initialized successfully.');
     } catch (err) {
-      console.error('[FirstDue] Fatal initialization error:', err);
+      console.error('[BoxRecall] Fatal initialization error:', err);
       try {
         Toast.show('App failed to initialize: ' + err.message, 'error');
       } catch (e2) {
         // Toast itself unavailable — last resort
-        alert('First Due failed to start: ' + err.message);
+        alert('Box Recall failed to start: ' + err.message);
       }
     }
   }

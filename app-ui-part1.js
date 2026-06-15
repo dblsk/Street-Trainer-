@@ -1,13 +1,13 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-ui.js — Tab rendering, sidebar/mobile sheet wiring, modals
-// (Part 1: Dashboard, Box Builder, shared helpers, modals)
+// (Part 1: Home tab + detail sheet, Manage tab (Box Builder), shared helpers, modals)
 // ============================================================================
 
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
   const Toast = FD.Toast;
   const esc = FD.escapeHtml;
@@ -26,10 +26,8 @@
   // ---------------------------------------------------------------------
 
   const TAB_TITLES = {
-    dashboard: 'DASHBOARD',
-    builder: 'BOX BUILDER',
-    study: 'STUDY MODE',
-    quiz: 'QUIZ',
+    home: 'HOME',
+    builder: 'MANAGE',
   };
 
   function renderActiveTab() {
@@ -40,16 +38,14 @@
 
     let html = '';
     switch (tab) {
-      case 'dashboard': html = renderDashboardTab(); break;
+      case 'home': html = renderHomeTab(); break;
       case 'builder': html = renderBuilderTab(); break;
-      case 'study': html = window.FirstDue.UI.renderStudyTab(); break;
-      case 'quiz': html = window.FirstDue.UI.renderQuizTab(); break;
-      default: html = renderDashboardTab();
+      default: html = renderHomeTab();
     }
 
     desktopRoot.innerHTML = html;
     mobileRoot.innerHTML = html;
-    if (sheetTitle) sheetTitle.textContent = TAB_TITLES[tab] || 'FIRST DUE';
+    if (sheetTitle) sheetTitle.textContent = TAB_TITLES[tab] || 'BOX RECALL';
 
     refreshIcons(desktopRoot);
     refreshIcons(mobileRoot);
@@ -62,13 +58,13 @@
 
   /**
    * bindDynamicHandlers is implemented in app-ui-part2.js and attached to
-   * window.FirstDue.UI after that file loads. This thin wrapper lets
+   * window.BoxRecall.UI after that file loads. This thin wrapper lets
    * functions defined in this file (part1) call it without a hard
    * compile-time dependency on load order.
    */
   function bindDynamicHandlers(root) {
-    if (window.FirstDue.UI.bindDynamicHandlers) {
-      window.FirstDue.UI.bindDynamicHandlers(root);
+    if (window.BoxRecall.UI.bindDynamicHandlers) {
+      window.BoxRecall.UI.bindDynamicHandlers(root);
     }
   }
 
@@ -117,85 +113,247 @@
   }
 
   // ---------------------------------------------------------------------
-  // DASHBOARD TAB (Module 4: Performance Analytics + Heat Map)
+  // HOME TAB — box list ranked by what needs attention; tap a box to open
+  // its detail sheet (study/quiz). Replaces Dashboard + Study + Quiz tabs.
   // ---------------------------------------------------------------------
 
-  function renderDashboardTab() {
+  // Sort priority for "what needs attention first": failing -> review ->
+  // unstudied -> mastered. Within a tier, lower ratio (worse performance)
+  // sorts first; ties break by box number for a stable order.
+  const MASTERY_SORT_RANK = { failing: 0, review: 1, unstudied: 2, mastered: 3 };
+
+  // Shared across the Home tab's detail sheet (part1) and the legacy Quiz
+  // tab renderers (part2, pending removal once Home fully replaces it).
+  // Exported via UI.QUIZ_MODE_META for part2's cross-file reference.
+  const QUIZ_MODE_META = {
+    'name-street': { label: 'Name the Street', icon: 'type', color: 'cyan', desc: 'A street segment is highlighted on the map. Type its name.' },
+    'locate-street': { label: 'Locate the Street', icon: 'map-pin', color: 'green', desc: 'You\'ll be told a street name. Tap it on the map.' },
+    'box-identifier': { label: 'Box Identifier', icon: 'locate', color: 'amber', desc: 'A pin drops somewhere on the map. Identify which Response Box it\'s in.' },
+  };
+
+  function sortBoxesByAttention(boxes) {
+    const MapMod = window.BoxRecall.Map;
+    return boxes.slice().sort(function (a, b) {
+      const ma = MapMod._internal.masteryForBox(a.properties.boxNumber);
+      const mb = MapMod._internal.masteryForBox(b.properties.boxNumber);
+      const ra = MASTERY_SORT_RANK[ma.level] !== undefined ? MASTERY_SORT_RANK[ma.level] : 99;
+      const rb = MASTERY_SORT_RANK[mb.level] !== undefined ? MASTERY_SORT_RANK[mb.level] : 99;
+      if (ra !== rb) return ra - rb;
+      if (ma.ratio !== null && mb.ratio !== null && ma.ratio !== mb.ratio) return ma.ratio - mb.ratio;
+      return String(a.properties.boxNumber).localeCompare(String(b.properties.boxNumber), undefined, { numeric: true });
+    });
+  }
+
+  function renderHomeTab() {
     const boxes = Store.state.boxes.features || [];
-    const MapMod = window.FirstDue.Map;
+    const quiz = Store.state.quiz;
 
     let body = '';
 
     if (boxes.length === 0) {
-      body += emptyState('No Response Boxes defined yet. Head to Box Builder to draw your first box, or import a GeoJSON file from Settings.', 'map');
-    } else {
-      // Overall stats summary
-      const summary = computeOverallSummary(boxes);
-      body += '<div class="grid grid-cols-3 gap-2 mb-4">' +
-        statTile('Mastered', summary.mastered, 'text-alert-green') +
-        statTile('Review', summary.review, 'text-alert-amber') +
-        statTile('Failing/New', summary.failing + summary.unstudied, 'text-alert-red') +
-        '</div>';
-
-      // Heat grid — the signature dashboard element
-      body += sectionHeader('Box Heat Grid', 'grid-3x3');
-      body += '<p class="text-[11px] text-ink-500 mb-2.5 leading-relaxed">Tap a box to jump to it on the map and open Study Mode.</p>';
-      body += '<div class="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-5">';
-      boxes
-        .slice()
-        .sort(function (a, b) { return String(a.properties.boxNumber).localeCompare(String(b.properties.boxNumber), undefined, { numeric: true }); })
-        .forEach(function (f) {
-          const boxNumber = f.properties.boxNumber;
-          const mastery = MapMod._internal.masteryForBox(boxNumber);
-          body += heatTile(boxNumber, mastery);
-        });
-      body += '</div>';
-
-      // Per-box breakdown list
-      body += sectionHeader('Box Details', 'list');
-      body += '<div class="space-y-2 mb-4">';
-      boxes
-        .slice()
-        .sort(function (a, b) { return String(a.properties.boxNumber).localeCompare(String(b.properties.boxNumber), undefined, { numeric: true }); })
-        .forEach(function (f) {
-          body += boxDetailRow(f);
-        });
-      body += '</div>';
+      body += emptyState('No Response Boxes defined yet. Head to Manage to import or draw your first box.', 'map');
+      return wrapTabPanel(body);
     }
+
+    // Summary tiles
+    const summary = computeOverallSummary(boxes);
+    body += '<div class="grid grid-cols-3 gap-2 mb-4">' +
+      statTile('Mastered', summary.mastered, 'text-alert-green') +
+      statTile('Review', summary.review, 'text-alert-amber') +
+      statTile('Failing/New', summary.failing + summary.unstudied, 'text-alert-red') +
+      '</div>';
+
+    // If a quiz is active or showing results, surface that box's sheet
+    // immediately — the user is mid-session and shouldn't have to find it
+    // in the list again.
+    const quizBoxNumber = (quiz.phase !== 'IDLE' && quiz.boxNumber) ? quiz.boxNumber : null;
+    const openBoxNumber = quizBoxNumber || Store.state.activeBoxNumber;
+
+    if (openBoxNumber) {
+      body += renderBoxDetailSheet(openBoxNumber);
+    }
+
+    // Box list, ranked by what needs attention first.
+    body += sectionHeader('Your Boxes', 'list');
+    body += '<div class="space-y-2 mb-4">';
+    sortBoxesByAttention(boxes).forEach(function (f) {
+      body += renderBoxCard(f, f.properties.boxNumber === openBoxNumber);
+    });
+    body += '</div>';
 
     return wrapTabPanel(body);
   }
 
-  function statTile(label, value, colorCls) {
-    return '<div class="bg-base-800 border border-base-700 rounded-md p-2.5 text-center">' +
-      '<div class="font-display font-700 text-xl ' + colorCls + '">' + value + '</div>' +
-      '<div class="text-[10px] font-mono uppercase tracking-wider text-ink-500 mt-0.5">' + esc(label) + '</div>' +
+  /**
+   * The detail sheet for a single box — shown above the box list when a box
+   * is "open" (either explicitly tapped, or because a quiz is in progress
+   * for it). Content depends on Store.state.quiz.phase:
+   *   - IDLE: street roster + Study/Quiz mode buttons (start a session)
+   *   - QUIZ_ONGOING / ANSWER_SUBMITTED: progress bar + End Quiz (the actual
+   *     question/answer UI lives in the map's quiz overlay, unchanged)
+   *   - RESULTS_SCORE: score summary + retry/new-session actions
+   *
+   * Only IDLE shows a "close" button — once a quiz starts, End Quiz is the
+   * way out (matches the existing quiz state machine, which doesn't support
+   * abandoning mid-quiz except via endQuiz()).
+   */
+  function renderBoxDetailSheet(boxNumber) {
+    const quiz = Store.state.quiz;
+    const isThisBoxQuizzing = quiz.phase !== 'IDLE' && quiz.boxNumber === boxNumber;
+
+    let inner = '';
+
+    if (isThisBoxQuizzing) {
+      inner += quiz.phase === 'RESULTS_SCORE' ? renderQuizResultsForSheet() : renderQuizProgressForSheet();
+    } else {
+      inner += renderBoxStudyOverview(boxNumber);
+    }
+
+    const closeButton = isThisBoxQuizzing
+      ? ''
+      : '<button data-action="close-box-sheet" title="Close" class="w-7 h-7 rounded border border-base-600 hover:border-base-500 flex items-center justify-center text-ink-500 hover:text-ink-300 transition-colors"><i data-lucide="x" class="w-4 h-4"></i></button>';
+
+    return '<div class="bg-base-800 border border-alert-cyan/30 rounded-md p-3 mb-4">' +
+      '<div class="flex items-center justify-between mb-2.5">' +
+      '<span class="font-mono font-700 text-base text-ink-100 flex items-center gap-1.5"><i data-lucide="map-pin" class="w-4 h-4 text-alert-cyan"></i> Box ' + esc(boxNumber) + '</span>' +
+      closeButton +
+      '</div>' +
+      inner +
       '</div>';
   }
 
-  function heatTile(boxNumber, mastery) {
-    const colorMap = {
-      mastered: 'bg-alert-green/15 border-alert-green/50 text-alert-green',
-      review: 'bg-alert-amber/15 border-alert-amber/50 text-alert-amber',
-      failing: 'bg-alert-red/15 border-alert-red/50 text-alert-red',
-      unstudied: 'bg-base-800 border-base-600 text-ink-500',
-    };
-    const cls = colorMap[mastery.level] || colorMap.unstudied;
-    const pct = mastery.ratio !== null ? Math.round(mastery.ratio * 100) + '%' : '—';
-    return '<button data-action="focus-box" data-box="' + esc(boxNumber) + '" ' +
-      'class="heat-tile rounded-md border ' + cls + ' flex flex-col items-center justify-center gap-0.5 hover:opacity-80 transition-opacity active:scale-95">' +
-      '<span class="font-mono font-700 text-xs leading-tight">' + esc(boxNumber) + '</span>' +
-      '<span class="font-mono text-[10px] opacity-80">' + pct + '</span>' +
-      '</button>';
+  /**
+   * IDLE-state content: mastery badge, street roster, and the three
+   * Study/Quiz mode buttons. Equivalent to the old Study tab's "Box
+   * Overview" + "Street Roster" sections, for one box.
+   */
+  function renderBoxStudyOverview(boxNumber) {
+    const mastery = window.BoxRecall.Map._internal.masteryForBox(boxNumber);
+    const stats = Store.getBoxStats(boxNumber);
+    const streets = window.BoxRecall.Quiz.streetsForBox(boxNumber);
+
+    let body = '';
+    body += '<div class="flex items-center justify-between mb-3">' +
+      masteryBadge(mastery.level, mastery.ratio) +
+      '<div class="flex items-center gap-2">' +
+      '<span class="text-[11px] text-ink-500 font-mono">' + streets.length + ' street' + (streets.length === 1 ? '' : 's') + '</span>' +
+      (mastery.ratio !== null
+        ? '<button data-action="reset-box-stats" data-box="' + esc(boxNumber) + '" title="Reset stats for this box" class="w-6 h-6 rounded border border-base-600 hover:border-alert-red/50 text-ink-500 hover:text-alert-red transition-colors flex items-center justify-center"><i data-lucide="rotate-ccw" class="w-3 h-3"></i></button>'
+        : '') +
+      '</div>' +
+      '</div>';
+
+    body += '<div class="grid grid-cols-3 gap-1.5 mb-3">' +
+      '<button data-action="go-quiz-mode" data-box="' + esc(boxNumber) + '" data-mode="name-street" class="text-[10px] font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors flex flex-col items-center gap-1"><i data-lucide="type" class="w-3.5 h-3.5"></i>Name It</button>' +
+      '<button data-action="go-quiz-mode" data-box="' + esc(boxNumber) + '" data-mode="locate-street" class="text-[10px] font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-green/40 hover:bg-alert-green/10 text-alert-green transition-colors flex flex-col items-center gap-1"><i data-lucide="map-pin" class="w-3.5 h-3.5"></i>Locate It</button>' +
+      '<button data-action="go-quiz-mode" data-box="' + esc(boxNumber) + '" data-mode="box-identifier" class="text-[10px] font-display font-600 uppercase tracking-wide py-2 rounded border border-alert-amber/40 hover:bg-alert-amber/10 text-alert-amber transition-colors flex flex-col items-center gap-1"><i data-lucide="locate" class="w-3.5 h-3.5"></i>ID Box</button>' +
+      '</div>';
+
+    if (streets.length > 0) {
+      body += '<div class="space-y-1 max-h-[180px] overflow-y-auto pr-0.5">';
+      streets
+        .slice()
+        .sort(function (a, b) { return (a.properties.name || '').localeCompare(b.properties.name || ''); })
+        .forEach(function (f) {
+          const ss = stats.streetStats[f.id];
+          const ratio = ss && ss.seen > 0 ? ss.correct / ss.seen : null;
+          let lvl = 'unstudied';
+          if (ratio !== null) {
+            const T = FD.MASTERY_THRESHOLDS;
+            lvl = ratio >= T.MASTERED ? 'mastered' : (ratio >= T.REVIEW ? 'review' : 'failing');
+          }
+          body += '<div class="bg-base-900 border border-base-700 rounded px-2 py-1 flex items-center justify-between gap-2">' +
+            '<span class="font-mono text-xs truncate">' + esc(f.properties.name || 'Unnamed') + '</span>' +
+            masteryBadge(lvl, ratio) +
+            '</div>';
+        });
+      body += '</div>';
+    }
+
+    return body;
   }
 
-  function boxDetailRow(feature) {
+  /**
+   * QUIZ_ONGOING / ANSWER_SUBMITTED content for the sheet: progress bar +
+   * End Quiz. The actual question/answer controls remain in the map's quiz
+   * overlay (renderQuizOverlay), unchanged — this is just the sheet-side
+   * progress indicator + escape hatch, matching the old Quiz tab's
+   * "active sidebar".
+   */
+  function renderQuizProgressForSheet() {
+    const quiz = Store.state.quiz;
+    const meta = QUIZ_MODE_META[quiz.mode] || { label: quiz.mode, icon: 'brain-circuit' };
+
+    const progress = quiz.totalQuestions > 0 ? (quiz.questionIndex / quiz.totalQuestions) : 0;
+    const progressShown = quiz.phase === 'ANSWER_SUBMITTED' ? (quiz.questionIndex + 1) / quiz.totalQuestions : progress;
+
+    let body = '';
+    body += '<div class="flex items-center justify-between mb-3">' +
+      '<span class="text-xs font-display font-700 uppercase tracking-wide text-ink-100 flex items-center gap-1.5"><i data-lucide="' + meta.icon + '" class="w-3.5 h-3.5 text-alert-cyan"></i>' + esc(meta.label) + '</span>' +
+      '<button data-action="end-quiz" class="text-[10px] font-display font-600 uppercase tracking-wide px-2 py-1 rounded border border-base-600 hover:border-alert-red/50 text-ink-500 hover:text-alert-red transition-colors">End Quiz</button>' +
+      '</div>';
+
+    body += '<div class="mb-2">' +
+      '<div class="flex justify-between text-[10px] font-mono text-ink-500 mb-1">' +
+      '<span>Question ' + Math.min(quiz.questionIndex + 1, quiz.totalQuestions) + ' / ' + quiz.totalQuestions + '</span>' +
+      '<span>' + Math.round(progressShown * 100) + '%</span>' +
+      '</div>' +
+      '<div class="h-1.5 bg-base-700 rounded-full overflow-hidden">' +
+      '<div class="h-full bg-alert-cyan transition-all duration-300" style="width:' + Math.round(progressShown * 100) + '%"></div>' +
+      '</div>' +
+      '</div>';
+
+    body += '<p class="text-[11px] text-ink-500 leading-relaxed">The active question and answer controls appear at the bottom of the map. On mobile, swipe the panel down to see the full map.</p>';
+
+    return body;
+  }
+
+  /**
+   * RESULTS_SCORE content for the sheet: score, hardest street, retry/new
+   * session — equivalent to the old Quiz tab's results screen.
+   */
+  function renderQuizResultsForSheet() {
+    const summary = window.BoxRecall.Quiz.getSessionSummary();
+    const meta = QUIZ_MODE_META[summary.mode] || { label: summary.mode };
+
+    let scoreColor = 'text-alert-red';
+    if (summary.pct >= 80) scoreColor = 'text-alert-green';
+    else if (summary.pct >= 50) scoreColor = 'text-alert-amber';
+
+    let body = '';
+    body += '<div class="text-center py-2">' +
+      '<div class="text-[11px] font-mono uppercase tracking-wider text-ink-500 mb-1">' + esc(meta.label) + '</div>' +
+      '<div class="font-display font-700 text-5xl ' + scoreColor + '">' + summary.pct + '%</div>' +
+      '<div class="text-sm text-ink-300 mt-1 font-mono">' + summary.correct + ' / ' + summary.total + ' correct</div>' +
+      '</div>';
+
+    if (summary.hardestName) {
+      body += '<div class="bg-base-900 border border-alert-amber/30 rounded-md p-2.5 mb-3 flex items-center gap-2">' +
+        '<i data-lucide="alert-triangle" class="w-4 h-4 text-alert-amber shrink-0"></i>' +
+        '<span class="text-xs text-ink-100">Toughest this round: <span class="font-mono font-700">' + esc(summary.hardestName) + '</span></span>' +
+        '</div>';
+    }
+
+    body += '<div class="grid grid-cols-2 gap-2">' +
+      '<button data-action="retry-quiz" data-mode="' + esc(summary.mode) + '" data-box="' + esc(summary.boxNumber || '') + '" class="text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors flex items-center justify-center gap-1.5"><i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>Retry</button>' +
+      '<button data-action="quiz-new-session" class="text-xs font-display font-600 uppercase tracking-wide py-2.5 rounded border border-base-600 hover:border-base-500 text-ink-300 transition-colors flex items-center justify-center gap-1.5"><i data-lucide="list" class="w-3.5 h-3.5"></i>Done</button>' +
+      '</div>';
+
+    return body;
+  }
+
+  /**
+   * A single box's row in the Home list: tappable to open its detail sheet.
+   * Shows mastery badge, street count, and the "hardest street" hint (same
+   * data boxDetailRow used to show). The currently-open box is highlighted.
+   */
+  function renderBoxCard(feature, isOpen) {
     const boxNumber = feature.properties.boxNumber;
-    const MapMod = window.FirstDue.Map;
+    const MapMod = window.BoxRecall.Map;
     const mastery = MapMod._internal.masteryForBox(boxNumber);
     const stats = Store.getBoxStats(boxNumber);
+    const streetCount = window.BoxRecall.Quiz.streetsForBox(boxNumber).length;
 
-    // Hardest street: lowest correct ratio among streets with attempts
     let hardest = null, hardestRatio = Infinity;
     Object.keys(stats.streetStats || {}).forEach(function (sid) {
       const s = stats.streetStats[sid];
@@ -208,30 +366,30 @@
       }
     });
 
-    const streetCount = window.FirstDue.Quiz.streetsForBox(boxNumber).length;
+    const openCls = isOpen ? ' ring-2 ring-alert-cyan/50' : '';
 
-    return '<div class="bg-base-800 border border-base-700 rounded-md p-2.5">' +
+    return '<button data-action="open-box-sheet" data-box="' + esc(boxNumber) + '" ' +
+      'class="w-full text-left bg-base-800 border border-base-700 rounded-md p-2.5 hover:border-alert-cyan/40 transition-colors' + openCls + '">' +
       '<div class="flex items-center justify-between mb-1.5">' +
-      '<button data-action="focus-box" data-box="' + esc(boxNumber) + '" class="font-mono font-700 text-sm text-ink-100 hover:text-alert-cyan transition-colors flex items-center gap-1.5">' +
-      '<i data-lucide="map-pin" class="w-3.5 h-3.5"></i> Box ' + esc(boxNumber) +
-      '</button>' +
+      '<span class="font-mono font-700 text-sm text-ink-100 flex items-center gap-1.5"><i data-lucide="map-pin" class="w-3.5 h-3.5"></i> Box ' + esc(boxNumber) + '</span>' +
       masteryBadge(mastery.level, mastery.ratio) +
       '</div>' +
       '<div class="flex items-center justify-between text-[11px] text-ink-500 font-mono">' +
       '<span>' + streetCount + ' street' + (streetCount === 1 ? '' : 's') + '</span>' +
       '<span class="truncate max-w-[140px]" title="' + esc(hardest || '') + '">' + (hardest ? 'Hardest: ' + esc(hardest) : 'No attempts yet') + '</span>' +
       '</div>' +
-      '<div class="flex gap-1.5 mt-2">' +
-      '<button data-action="focus-box" data-box="' + esc(boxNumber) + '" class="flex-1 text-[10px] font-display font-600 uppercase tracking-wide py-1.5 rounded border border-base-600 hover:border-alert-cyan/50 text-ink-300 transition-colors">View</button>' +
-      '<button data-action="go-quiz" data-box="' + esc(boxNumber) + '" class="flex-1 text-[10px] font-display font-600 uppercase tracking-wide py-1.5 rounded border border-alert-cyan/40 hover:bg-alert-cyan/10 text-alert-cyan transition-colors">Quiz</button>' +
-      '<button data-action="reset-box-stats" data-box="' + esc(boxNumber) + '" title="Reset stats for this box" class="w-8 text-[10px] py-1.5 rounded border border-base-600 hover:border-alert-red/50 text-ink-500 hover:text-alert-red transition-colors flex items-center justify-center">' +
-      '<i data-lucide="rotate-ccw" class="w-3 h-3"></i></button>' +
-      '</div>' +
+      '</button>';
+  }
+
+  function statTile(label, value, colorCls) {
+    return '<div class="bg-base-800 border border-base-700 rounded-md p-2.5 text-center">' +
+      '<div class="font-display font-700 text-xl ' + colorCls + '">' + value + '</div>' +
+      '<div class="text-[10px] font-mono uppercase tracking-wider text-ink-500 mt-0.5">' + esc(label) + '</div>' +
       '</div>';
   }
 
   function computeOverallSummary(boxes) {
-    const MapMod = window.FirstDue.Map;
+    const MapMod = window.BoxRecall.Map;
     const out = { mastered: 0, review: 0, failing: 0, unstudied: 0 };
     boxes.forEach(function (f) {
       const m = MapMod._internal.masteryForBox(f.properties.boxNumber);
@@ -247,7 +405,7 @@
   function renderBuilderTab() {
     const boxes = Store.state.boxes.features || [];
     const drawing = Store.state.drawingActive;
-    const streetDrawing = window.FirstDue._streetDrawActive || false;
+    const streetDrawing = window.BoxRecall._streetDrawActive || false;
 
     let body = '';
 
@@ -304,20 +462,43 @@
         '</details>';
     }
 
-    // -- Existing Boxes List --
-    body += sectionHeader('Defined Boxes (' + boxes.length + ')', 'database');
+    // -- Existing Boxes List (with bulk select/delete) --
+    const selectedCount = Store.state.selectedBoxIds.size;
+    const allSelected = boxes.length > 0 && boxes.every(function (f) { return Store.state.selectedBoxIds.has(f.id); });
+
+    body += '<div class="flex items-center justify-between gap-2 mb-2 mt-5">' +
+      '<h2 class="text-xs font-display font-700 uppercase tracking-wider text-ink-500 flex items-center gap-1.5"><i data-lucide="database" class="w-3.5 h-3.5"></i> Defined Boxes (' + boxes.length + ')</h2>' +
+      (selectedCount > 0
+        ? '<button data-action="bulk-delete-boxes" class="text-xs font-display font-600 uppercase tracking-wide px-2.5 py-1 rounded bg-alert-red/15 border border-alert-red/40 text-alert-red hover:bg-alert-red/25 transition-colors flex items-center gap-1.5">' +
+          '<i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete Selected (' + selectedCount + ')</button>'
+        : '') +
+      '</div>';
+
     if (boxes.length === 0) {
-      body += emptyState('Draw a box above, or import an existing GeoJSON file from Settings.', 'shapes');
+      body += emptyState('Import boxes above, or draw your first one manually.', 'shapes');
     } else {
+      // Select-all row
+      body += '<label class="flex items-center gap-2 px-1 mb-1.5 cursor-pointer select-none">' +
+        '<input type="checkbox" data-action="select-all-boxes" class="w-4 h-4 rounded border-base-600 accent-alert-cyan cursor-pointer"' + (allSelected ? ' checked' : '') + ' />' +
+        '<span class="text-[10px] font-mono uppercase tracking-wider text-ink-500">' +
+        (selectedCount > 0 ? selectedCount + ' selected' : 'Select all') +
+        '</span>' +
+        '</label>';
+
       body += '<div class="space-y-2 mb-5">';
       boxes
         .slice()
         .sort(function (a, b) { return String(a.properties.boxNumber).localeCompare(String(b.properties.boxNumber), undefined, { numeric: true }); })
         .forEach(function (f) {
-          const streetCount = window.FirstDue.Quiz.streetsForBox(f.properties.boxNumber).length;
-          body += '<div class="bg-base-800 border border-base-700 rounded-md p-2.5 flex items-center justify-between gap-2">' +
-            '<div class="min-w-0">' +
-            '<div class="font-mono font-700 text-sm">Box ' + esc(f.properties.boxNumber) + '</div>' +
+          const streetCount = window.BoxRecall.Quiz.streetsForBox(f.properties.boxNumber).length;
+          const isSelected = Store.state.selectedBoxIds.has(f.id);
+          const sourceBadge = f.properties.source === 'fairfax-frd'
+            ? '<span title="Imported from Fairfax County GIS" class="shrink-0 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-alert-green/30 text-alert-green/80">GIS</span>'
+            : '';
+          body += '<div class="bg-base-800 border border-base-700 rounded-md p-2.5 flex items-center gap-2.5' + (isSelected ? ' ring-1 ring-alert-cyan/40' : '') + '">' +
+            '<input type="checkbox" data-action="toggle-box-select" data-box-id="' + esc(f.id) + '" class="w-4 h-4 rounded border-base-600 accent-alert-cyan cursor-pointer shrink-0"' + (isSelected ? ' checked' : '') + ' />' +
+            '<div class="min-w-0 flex-1">' +
+            '<div class="font-mono font-700 text-sm flex items-center gap-1.5">Box ' + esc(f.properties.boxNumber) + ' ' + sourceBadge + '</div>' +
             '<div class="text-[10px] text-ink-500 font-mono truncate">' + esc(f.properties.label || 'No label') + ' · ' + streetCount + ' street' + (streetCount === 1 ? '' : 's') + '</div>' +
             '</div>' +
             '<div class="flex items-center gap-1.5 shrink-0">' +
@@ -426,13 +607,13 @@
     document.getElementById('setting-zoom').value = s.homeZoom;
     document.getElementById('setting-fuzzy').value = s.fuzzyTolerance;
     document.getElementById('fuzzy-val').textContent = s.fuzzyTolerance;
-    window.FirstDue.UI.renderBasemapSelector();
-    document.getElementById('settings-modal').classList.remove('hidden');
+    window.BoxRecall.UI.renderBasemapSelector();
+    document.getElementById('settings-modal').hidden = false;
     refreshIcons(document.getElementById('settings-modal'));
   }
 
   function closeSettingsModal() {
-    document.getElementById('settings-modal').classList.add('hidden');
+    document.getElementById('settings-modal').hidden = true;
   }
 
   function saveSettingsFromModal() {
@@ -453,7 +634,7 @@
   }
 
   function useCurrentMapCenter() {
-    const map = window.FirstDue.Map.getMap();
+    const map = window.BoxRecall.Map.getMap();
     if (!map) return;
     const c = map.getCenter();
     document.getElementById('setting-lat').value = c.lat.toFixed(6);
@@ -491,7 +672,7 @@
       document.body.removeChild(a);
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
     } catch (err) {
-      console.error('[FirstDue] Export failed:', err);
+      console.error('[BoxRecall] Export failed:', err);
       Toast.show('Export failed: ' + err.message, 'error');
     }
   }
@@ -509,9 +690,12 @@
       try {
         const data = JSON.parse(e.target.result);
         let toImport = data;
-        if (data.type === 'FirstDueExport' && data.boxes && data.streets) {
+        // Accept both the current export-type strings and the pre-rename
+        // ones ("FirstDue...") so files exported before the app was renamed
+        // to Box Recall still import correctly.
+        if ((data.type === 'BoxRecallExport' || data.type === 'FirstDueExport') && data.boxes && data.streets) {
           toImport = data;
-        } else if (data.type === 'FirstDueStatsExport') {
+        } else if (data.type === 'BoxRecallStatsExport' || data.type === 'FirstDueStatsExport') {
           if (data.stats) Store.setStats(data.stats);
           if (data.settings) Store.setSettings(data.settings);
           Toast.show('Stats imported.', 'success');
@@ -523,7 +707,7 @@
           (Store.state.streets.features.length) + ' street(s).', 'success');
         renderActiveTab();
       } catch (err) {
-        console.error('[FirstDue] Import failed:', err);
+        console.error('[BoxRecall] Import failed:', err);
         Toast.show('Import failed: file is not valid JSON/GeoJSON.', 'error');
       }
     };
@@ -537,8 +721,8 @@
     const ok = window.confirm('This will permanently delete all boxes, streets, and performance stats stored in this browser. This cannot be undone. Continue?');
     if (!ok) return;
     Store.resetAllData();
-    window.FirstDue.Map.clearFocus();
-    window.FirstDue.Map.recenterHome();
+    window.BoxRecall.Map.clearFocus();
+    window.BoxRecall.Map.recenterHome();
     renderActiveTab();
     Toast.show('All local data has been reset.', 'success');
   }
@@ -546,9 +730,9 @@
   // ---------------------------------------------------------------------
   // EXPORTS (this file is part 1 — more attached by app-ui-part2.js)
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  window.FirstDue.UI = window.FirstDue.UI || {};
-  Object.assign(window.FirstDue.UI, {
+  window.BoxRecall = window.BoxRecall || {};
+  window.BoxRecall.UI = window.BoxRecall.UI || {};
+  Object.assign(window.BoxRecall.UI, {
     refreshIcons: refreshIcons,
     renderActiveTab: renderActiveTab,
     syncTabIndicators: syncTabIndicators,
@@ -557,6 +741,9 @@
     masteryBadge: masteryBadge,
     wrapTabPanel: wrapTabPanel,
     boxOptionsHtml: boxOptionsHtml,
+    QUIZ_MODE_META: QUIZ_MODE_META,
+    renderHomeTab: renderHomeTab,
+    renderBoxDetailSheet: renderBoxDetailSheet,
 
     // settings modal
     openSettingsModal: openSettingsModal,

@@ -1,5 +1,5 @@
 // ============================================================================
-// FIRST DUE — Box Study & Active Recall App
+// BOX RECALL — Box Study & Active Recall App
 // app-diagnostics.js — Strict client-side test suite (Step 4)
 //
 // Mocks map renders, simulates correct/incorrect quiz answers, verifies
@@ -10,7 +10,7 @@
 (function () {
   'use strict';
 
-  const FD = window.FirstDue;
+  const FD = window.BoxRecall;
   const Store = FD.Store;
 
   let results = [];
@@ -212,7 +212,7 @@
 
       // Mastery calculation should now be "review" or "mastered" depending on ratio
       // total seen=3, correct=2 -> ratio 0.667 -> 'review'
-      const mastery = window.FirstDue.Map._internal.masteryForBox('__DIAG__');
+      const mastery = window.BoxRecall.Map._internal.masteryForBox('__DIAG__');
       assert(mastery.level === 'review', 'masteryForBox computes "review" for 2/3 ratio', JSON.stringify(mastery));
 
       // removeStreet / removeBox
@@ -243,7 +243,7 @@
   function testMapRenderMocks() {
     section('Map Render Mocks & Error Handling');
 
-    const MapMod = window.FirstDue.Map;
+    const MapMod = window.BoxRecall.Map;
     assert(typeof MapMod.getMap === 'function', 'Map module exposes getMap()');
 
     const map = MapMod.getMap();
@@ -317,7 +317,7 @@
   function testOverpassStreetDiscovery() {
     section('Overpass Street Auto-Discovery');
 
-    const MapMod = window.FirstDue.Map;
+    const MapMod = window.BoxRecall.Map;
     const internal = MapMod._internal;
 
     if (!internal.buildOverpassQuery || !internal.mergeAdjacentNamedWays) {
@@ -393,6 +393,65 @@
           assert(typeof capturedUrl === 'string' && capturedUrl.indexOf('[') === -1 && capturedUrl.indexOf('"') === -1, 'Overpass query is properly URL-encoded (no raw [ or " characters)', capturedUrl);
           assert(!capturedOpts || !capturedOpts.body, 'GET request has no request body');
 
+          const decodedQuery = decodeURIComponent(capturedUrl.split('?data=')[1]);
+          assert(decodedQuery.indexOf('[timeout:60]') !== -1, 'query uses a 60s server-side timeout (raised from 25s to accommodate large real-world polygons)', decodedQuery.substring(0, 40));
+
+          // --- Closing-duplicate-point stripping: a GeoJSON-style ring whose
+          // last point repeats the first should be sent to Overpass without
+          // that trailing duplicate (avoids a redundant zero-length closing edge).
+          const ringWithDup = verts.concat([verts[0]]);
+          let dupCapturedUrl = null;
+          window.fetch = function (url) { dupCapturedUrl = url; return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ elements: [] }); } }); };
+          return MapMod.fetchStreetsForPolygon(ringWithDup, '__DIAG_OVERPASS__').then(function () {
+            const dupDecoded = decodeURIComponent(dupCapturedUrl.split('?data=')[1]);
+            const polyStr = dupDecoded.match(/poly:"([^"]+)"/)[1];
+            const coordCount = polyStr.split(' ').length / 2;
+            assert(coordCount === verts.length, 'a ring with a GeoJSON-style closing duplicate point sends only the unique vertices to Overpass (duplicate stripped)', { inputVerts: ringWithDup.length, sentCoords: coordCount, expected: verts.length });
+
+            // --- Overpass "remark" field (HTTP 200 + partial results due to
+            // server-side timeout) is detected and surfaced as a warning,
+            // WITHOUT discarding whatever partial features were returned. ---
+            window.fetch = function () {
+              return Promise.resolve({
+                ok: true,
+                json: function () {
+                  return Promise.resolve({
+                    remark: 'runtime error: Query timed out in "query" at line 1 after 60 seconds.',
+                    elements: [
+                      { type: 'way', id: 301, tags: { highway: 'primary', name: 'Partial Result Pkwy' }, geometry: [{ lat: 28.031, lon: -82.448 }, { lat: 28.032, lon: -82.447 }] },
+                    ],
+                  });
+                },
+              });
+            };
+            return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (resultRemark) {
+              assert(resultRemark.features.length === 1, 'a "remark" (timeout) response still returns whatever partial features were found', resultRemark.features.length);
+              assert(typeof resultRemark.error === 'string' && resultRemark.error.toLowerCase().includes('timed out'), 'a "remark" (timeout) response sets an error explaining the lookup was incomplete', resultRemark.error);
+              assert(resultRemark.error.toLowerCase().includes('manually'), 'the timeout error suggests adding missing streets manually', resultRemark.error);
+
+              // A response with NO remark field should NOT trigger this path.
+              window.fetch = function () {
+                return Promise.resolve({
+                  ok: true,
+                  json: function () {
+                    return Promise.resolve({
+                      elements: [
+                        { type: 'way', id: 302, tags: { highway: 'primary', name: 'Normal Result Pkwy' }, geometry: [{ lat: 28.031, lon: -82.448 }, { lat: 28.032, lon: -82.447 }] },
+                      ],
+                    });
+                  },
+                });
+              };
+              return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (resultNoRemark) {
+                assert(resultNoRemark.error === null, 'a normal response with no "remark" field returns no error', resultNoRemark.error);
+
+                return continueErrorPathTests();
+              });
+            });
+          });
+        });
+
+        function continueErrorPathTests() {
           // --- Error paths: network failure, 429 rate limit, and other non-OK HTTP status ---
           window.fetch = function () { return Promise.reject(new TypeError('mock network failure')); };
           return MapMod.fetchStreetsForPolygon(verts, '__DIAG_OVERPASS__').then(function (result2) {
@@ -416,7 +475,7 @@
               });
             });
           });
-        });
+        }
       }).catch(function (err) {
         fail('testOverpassStreetDiscovery async chain threw', err.message);
       }).finally(function () {
@@ -437,9 +496,9 @@
   function testFairfaxImport() {
     section('Fairfax County GIS Box Import');
 
-    const Import = window.FirstDue.Import;
+    const Import = window.BoxRecall.Import;
     if (!Import) {
-      fail('Fairfax import module not loaded', 'window.FirstDue.Import is missing');
+      fail('Fairfax import module not loaded', 'window.BoxRecall.Import is missing');
       return Promise.resolve();
     }
 
@@ -496,9 +555,9 @@
     assert(Import._internal.convertFairfaxFeatureToBoxFeature(noBoxNum) === null, 'feature with no FIRE_BOX_NUM is rejected (returns null)');
 
     // --- Mocked end-to-end: fetchFairfaxFireBoxes + persistBoxWithStreetLookup (sandboxed) ---
-    const UI = window.FirstDue.UI;
+    const UI = window.BoxRecall.UI;
     if (!UI || !UI.persistBoxWithStreetLookup) {
-      fail('persistBoxWithStreetLookup not exported', 'window.FirstDue.UI.persistBoxWithStreetLookup is missing — skipping end-to-end import test');
+      fail('persistBoxWithStreetLookup not exported', 'window.BoxRecall.UI.persistBoxWithStreetLookup is missing — skipping end-to-end import test');
       return Promise.resolve();
     }
 
@@ -552,16 +611,16 @@
 
         feature.id = FD.genId('box');
         assert(feature.properties.boxNumber === '444444', 'imported feature has the expected boxNumber', feature.properties.boxNumber);
-        assert(window.FirstDue.Map.findBoxByNumber('444444') === undefined, 'sandbox box number 444444 does not collide with existing data before persist');
+        assert(window.BoxRecall.Map.findBoxByNumber('444444') === undefined, 'sandbox box number 444444 does not collide with existing data before persist');
 
         return UI.persistBoxWithStreetLookup(feature, { silent: true, skipRender: true }).then(function (persistResult) {
           assert(persistResult.addedStreets === 1, 'persistBoxWithStreetLookup adds 1 street from the mocked Overpass response', persistResult);
           assert(persistResult.streetError === null, 'persistBoxWithStreetLookup reports no street error', persistResult.streetError);
 
-          const savedBox = window.FirstDue.Map.findBoxByNumber('444444');
+          const savedBox = window.BoxRecall.Map.findBoxByNumber('444444');
           assert(!!savedBox && savedBox.properties.source === 'fairfax-frd', 'imported box is persisted with source="fairfax-frd"', savedBox && savedBox.properties);
 
-          const savedStreets = window.FirstDue.Quiz.streetsForBox('444444');
+          const savedStreets = window.BoxRecall.Quiz.streetsForBox('444444');
           assert(savedStreets.length === 1 && savedStreets[0].properties.name === 'Diag Import Ave', 'imported box has its auto-discovered street persisted', savedStreets);
 
           assert(fetchCallCount >= 2, 'both the Fairfax GIS query and the Overpass street lookup were called', fetchCallCount);
@@ -588,7 +647,7 @@
   function testQuizStateMachine() {
     section('Quiz State Machine (mocked questions)');
 
-    const Quiz = window.FirstDue.Quiz;
+    const Quiz = window.BoxRecall.Quiz;
     const snapshot = FD.deepClone(Store.state.quiz);
 
     try {
@@ -658,7 +717,7 @@
   function testShuffleAndDuplicateAvoidance() {
     section('Quiz Queue Helpers');
 
-    const Quiz = window.FirstDue.Quiz;
+    const Quiz = window.BoxRecall.Quiz;
     const arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     const shuffled = Quiz._internal.shuffle(arr);
     assert(shuffled.length === arr.length, 'shuffle preserves array length');
@@ -710,7 +769,7 @@
       assert(Store.state.streets.features.some(function (f) { return f.id === 'rt_street_1'; }), 'importGeoJSON correctly routes LineString features into streets');
 
       const exported = Store.exportGeoJSON();
-      assert(exported.type === 'FirstDueExport', 'exportGeoJSON returns FirstDueExport envelope');
+      assert(exported.type === 'BoxRecallExport', 'exportGeoJSON returns BoxRecallExport envelope');
       assert(exported.boxes.features.some(function (f) { return f.id === 'rt_box_1'; }), 'exportGeoJSON includes previously-imported box');
 
       // Round-trip: re-import the export and confirm idempotence
@@ -741,7 +800,7 @@
     assert(s.homeZoom >= 1 && s.homeZoom <= 19, 'persisted homeZoom within valid range', s.homeZoom);
     assert(s.fuzzyTolerance >= 0 && s.fuzzyTolerance <= 3, 'persisted fuzzyTolerance within valid range', s.fuzzyTolerance);
 
-    const MapMod = window.FirstDue.Map;
+    const MapMod = window.BoxRecall.Map;
     assert(typeof s.basemap === 'string' && !!MapMod.BASEMAPS[s.basemap], 'persisted basemap is a recognized key', s.basemap);
   }
 
@@ -753,7 +812,7 @@
   function testBasemapSwitching() {
     section('Basemap Switching');
 
-    const MapMod = window.FirstDue.Map;
+    const MapMod = window.BoxRecall.Map;
     const originalBasemap = Store.state.settings.basemap;
     let lastAppliedKey = originalBasemap; // tracks what the live map's tiles currently reflect
 
@@ -820,6 +879,71 @@
     }
   }
 
+  /**
+   * 7 always-JS-toggled elements (modals, banners, the quiz overlay, the
+   * drawing banner) use the native HTML `hidden` ATTRIBUTE to control
+   * visibility, rather than a `.hidden` CSS class. The hidden attribute has
+   * built-in browser-default display:none — no CSS needed from us or
+   * Tailwind — so these elements hide correctly even if Tailwind's CDN is
+   * unreachable (previously, hide/show relied entirely on Tailwind's
+   * `.hidden{display:none}`, and a slow/blocked CDN meant ALL of these
+   * elements rendered simultaneously: the cause of "leftover drawing
+   * banner" / "duplicate header" / stacked-modal symptoms).
+   *
+   * This deliberately does NOT apply to #sidebar or the desktop
+   * map-controls bar, which use Tailwind's `hidden md:flex` responsive
+   * CLASS pattern (hidden on mobile, shown via a breakpoint override on
+   * desktop) — those continue to depend on Tailwind as before, since the
+   * hidden ATTRIBUTE and hidden CLASS are independent and don't collide.
+   */
+  function testHiddenClassEnforcement() {
+    section('Hidden Attribute Enforcement');
+
+    if (typeof document === 'undefined') {
+      log('Skipped (no document available)', 'diag-info');
+      return;
+    }
+
+    // A bare element with the hidden ATTRIBUTE should compute to
+    // display:none with zero CSS from us or Tailwind — this is a browser
+    // built-in, which is the whole point of using it here.
+    const probe = document.createElement('div');
+    probe.hidden = true;
+    probe.id = '__diag_hidden_probe__';
+    document.body.appendChild(probe);
+    try {
+      const display = window.getComputedStyle(probe).display;
+      assert(display === 'none', 'the hidden attribute results in display:none via computed style (browser built-in, no CSS required)', display);
+    } finally {
+      probe.remove();
+    }
+
+    // Spot-check the real always-JS-toggled elements: each should be using
+    // the hidden ATTRIBUTE (not a .hidden class) for its current
+    // hidden/shown state, and that attribute should be effective.
+    ['draw-banner', 'settings-modal', 'quiz-overlay', 'map-error-banner', 'diagnostics-modal', 'active-box-pill', 'input-import-geojson'].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (!el) { fail('#' + id + ' exists in the DOM', 'not found'); return; }
+      assert(!el.classList.contains('hidden'), '#' + id + ' does not use the .hidden CLASS (uses the hidden ATTRIBUTE instead)', el.className);
+      if (el.hidden) {
+        assert(window.getComputedStyle(el).display === 'none', '#' + id + ' with the hidden attribute computes to display:none', window.getComputedStyle(el).display);
+      } else {
+        log('#' + id + ' currently visible (hidden=false) — not asserting display:none; expected if its show-condition is active', 'diag-info');
+      }
+    });
+
+    // #sidebar and the desktop map-controls bar should be UNCHANGED —
+    // still using Tailwind's hidden/md:flex responsive class pattern, not
+    // the hidden attribute (they're never JS-toggled).
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) {
+      assert(sidebar.classList.contains('hidden') && sidebar.classList.contains('md:flex'), '#sidebar still uses the hidden/md:flex responsive class pattern (untouched by the hidden-attribute change)', sidebar.className);
+      assert(sidebar.hidden === false, '#sidebar does not have the hidden attribute set (visibility is purely class/breakpoint-driven)', sidebar.hidden);
+    } else {
+      fail('#sidebar exists in the DOM', 'not found');
+    }
+  }
+
   // ---------------------------------------------------------------------
   // RUN ALL
   // ---------------------------------------------------------------------
@@ -827,7 +951,7 @@
     results = [];
     const startTime = performance.now();
 
-    log('FIRST DUE — Diagnostic Test Suite', 'diag-head');
+    log('BOX RECALL — Diagnostic Test Suite', 'diag-head');
     log('Started: ' + new Date().toISOString(), 'diag-info');
 
     try { testLevenshtein(); } catch (e) { fail('testLevenshtein crashed', e.message); }
@@ -844,6 +968,7 @@
     try { testImportExportRoundTrip(); } catch (e) { fail('testImportExportRoundTrip crashed', e.message); }
     try { testSettingsBounds(); } catch (e) { fail('testSettingsBounds crashed', e.message); }
     try { testBasemapSwitching(); } catch (e) { fail('testBasemapSwitching crashed', e.message); }
+    try { testHiddenClassEnforcement(); } catch (e) { fail('testHiddenClassEnforcement crashed', e.message); }
 
     const elapsed = (performance.now() - startTime).toFixed(1);
     const total = results.filter(function (r) { return r.cls === 'diag-pass' || r.cls === 'diag-fail'; }).length;
@@ -857,11 +982,11 @@
 
     // Console output (per spec: print pass/fail console log confirmation)
     results.forEach(function (r) {
-      if (r.cls === 'diag-pass') console.log('[FirstDue Diagnostics]', r.text);
-      else if (r.cls === 'diag-fail') console.error('[FirstDue Diagnostics]', r.text);
-      else console.info('[FirstDue Diagnostics]', r.text);
+      if (r.cls === 'diag-pass') console.log('[BoxRecall Diagnostics]', r.text);
+      else if (r.cls === 'diag-fail') console.error('[BoxRecall Diagnostics]', r.text);
+      else console.info('[BoxRecall Diagnostics]', r.text);
     });
-    console.log('[FirstDue Diagnostics] SUMMARY:', { total: total, passed: passed, failed: failed, elapsedMs: elapsed });
+    console.log('[BoxRecall Diagnostics] SUMMARY:', { total: total, passed: passed, failed: failed, elapsedMs: elapsed });
 
     return { total: total, passed: passed, failed: failed, results: results };
   }
@@ -879,8 +1004,8 @@
   // ---------------------------------------------------------------------
   // EXPORTS
   // ---------------------------------------------------------------------
-  window.FirstDue = window.FirstDue || {};
-  window.FirstDue.Diagnostics = {
+  window.BoxRecall = window.BoxRecall || {};
+  window.BoxRecall.Diagnostics = {
     runAll: runAll,
     renderToElement: renderToElement,
     getResults: function () { return results; },
